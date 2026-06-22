@@ -1,0 +1,3 @@
+[submodule "mlir/neura"]
+	path = mlir/neura
+	url = https://github.com/coredac/neura
