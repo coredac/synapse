@@ -10,7 +10,7 @@ python/synapse/          Python package source
 python/synapse/frontend  Source capture and frontend parser utilities
 examples/                Small frontend examples
 tests/                   Pytest tests
-mlir/neura/              Downstream NEURA / Taskflow compiler stack
+mlir/amoeba/             Downstream NEURA / Taskflow compiler stack
 ```
 
 ## Setup
