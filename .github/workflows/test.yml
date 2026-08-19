@@ -2,6 +2,8 @@ name: tests
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -25,10 +27,6 @@ jobs:
   python-unit-tests:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11"]
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -36,7 +34,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: 3.11.13
 
       - name: Install Synapse and test dependencies
         run: |
@@ -58,6 +56,9 @@ jobs:
       - name: Initialize Amoeba and Neura
         run: |
           git submodule update --init mlir/amoeba
+          git -C mlir/amoeba config \
+            submodule.thirdparty/neura.url \
+            https://github.com/coredac/neura.git
           git -C mlir/amoeba submodule update --init thirdparty/neura
 
       - name: Verify compiler submodules
@@ -184,4 +185,9 @@ jobs:
 
       - name: Show ccache statistics
         if: always()
-        run: ccache --show-stats
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --show-stats
+          else
+            echo "ccache was not installed because setup did not complete."
+          fi

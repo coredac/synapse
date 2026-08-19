@@ -31,11 +31,10 @@ mlir/amoeba/             Pinned Amoeba compiler dependency
 
 ## Requirements
 
-Frontend and language development requires Python 3.10 or newer.
+SYNAPSE currently requires Python 3.11.
 
 The compiler-integration path additionally requires:
 
-- Python 3.11;
 - CMake, Ninja, Clang, LLD, and ccache;
 - `pybind11==2.13.6` and `nanobind==2.15.0`; and
 - LLVM/MLIR at commit
@@ -179,8 +178,8 @@ The TileArray compiler path is exercised by the tests under
 
 The GitHub Actions workflow contains two layers:
 
-- `python-unit-tests` runs frontend and language tests on Python 3.10 and 3.11
-  without building LLVM.
+- `python-unit-tests` runs frontend and language tests on Python 3.11 without
+  building LLVM.
 - `compiler-integration` uses Python 3.11, checks out the pinned Amoeba and
   Neura revisions, downloads the pinned LLVM commit, builds LLVM/MLIR with
   Python bindings, builds `mlir-amoeba-opt` and `AmoebaPythonModules`, and runs
