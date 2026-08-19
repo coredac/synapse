@@ -2,7 +2,7 @@ import synapse.language as synl
 
 
 def test_records_tile_array_program():
-    array = synl.TileArray(4, 4)
+    array = synl.TileArray(x_tiles=4, y_tiles=4)
     builder = synl.tile_array_program.TileArrayBuilder()
 
     with builder:
@@ -31,7 +31,7 @@ def test_records_tile_array_program():
 
 
 def test_infers_supported_scalar_types():
-    array = synl.TileArray(1, 3)
+    array = synl.TileArray(x_tiles=1, y_tiles=3)
     builder = synl.tile_array_program.TileArrayBuilder()
 
     with builder:

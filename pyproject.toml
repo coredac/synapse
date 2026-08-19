@@ -12,3 +12,9 @@ package-dir = {"" = "python"}
 
 [tool.setuptools.packages.find]
 where = ["python"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "python",
+    "build/amoeba/python_packages/amoeba_core",
+]

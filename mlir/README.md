@@ -29,13 +29,23 @@ container hierarchy:
 ```text
 taskflow.task
   neura.kernel
-    mapped Neura operations
+    placed Neura operations with ordinary MLIR value types
 ```
 
-The operations inside `neura.kernel` are expected to carry post-mapping
-information such as tile coordinates, time steps, links, and registers. The
-single-task path does not yet define user-facing task syntax or perform
-inter-task allocation, placement, scheduling, replication, or communication.
+The frontend fixes the spatial operation placement selected by the TileArray
+program, but it does not construct Neura's predicated value type or final
+mapping metadata. The backend compilation flow performs:
+
+```text
+--leverage-predicated-value
+  -> --insert-data-mov
+  -> --map-to-accelerator="mapping-strategy=template mapping-mode=spatial-only"
+```
+
+The final mapped Neura IR contains tile coordinates, time steps, links, and
+register information. The single-task path does not yet define user-facing
+task syntax or perform inter-task allocation, placement, scheduling,
+replication, or communication.
 
 ## Checkout
 
