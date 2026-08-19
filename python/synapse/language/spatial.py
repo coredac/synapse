@@ -16,7 +16,8 @@ class Tile:
     corresponding position in the target CGRA tile array.
     """
 
-    def __init__(self, row: int, col: int):
+    def __init__(self, row: int, col: int, array: "TileArray"):
+        self.array = array
         self.row = row
         self.col = col
 
@@ -38,7 +39,8 @@ class TileArray:
         self.cols = cols
 
         self._tiles = [
-            [Tile(row=row, col=col) for col in range(cols)] for row in range(rows)
+            [Tile(row=row, col=col, array=self) for col in range(cols)]
+            for row in range(rows)
         ]
 
     def tiles(self):

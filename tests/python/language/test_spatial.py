@@ -24,6 +24,7 @@ def test_access_tile_array_by_coordinate():
     array = synl.TileArray(2, 3)
     tile = array[1, 2]
 
+    assert tile.array is array
     assert tile.row == 1
     assert tile.col == 2
 
