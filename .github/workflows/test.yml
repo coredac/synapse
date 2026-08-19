@@ -3,9 +3,26 @@ name: tests
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  LLVM_COMMIT: 6146a88f60492b520a36f8f8f3231e15f3cc6082
+  LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/build
+  AMOEBA_BUILD_DIR: ${{ github.workspace }}/build/amoeba
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_COMPRESS: "true"
+  CCACHE_MAXSIZE: 4G
 
 jobs:
-  pytest:
+  python-unit-tests:
     runs-on: ubuntu-latest
 
     strategy:
@@ -14,18 +31,157 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package
+      - name: Install Synapse and test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install pytest
 
-      - name: Run tests
-        run: pytest -q
+      - name: Run frontend and language tests
+        run: python -m pytest -q tests/python/frontend tests/python/language
+
+  compiler-integration:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Synapse
+        uses: actions/checkout@v7
+
+      - name: Initialize Amoeba and Neura
+        run: |
+          git submodule update --init mlir/amoeba
+          git -C mlir/amoeba submodule update --init thirdparty/neura
+
+      - name: Verify compiler submodules
+        run: |
+          test "$(git -C mlir/amoeba rev-parse HEAD)" = "$(git rev-parse HEAD:mlir/amoeba)"
+          test "$(git -C mlir/amoeba/thirdparty/neura rev-parse HEAD)" = "$(git -C mlir/amoeba rev-parse HEAD:thirdparty/neura)"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ccache clang lld ninja-build
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.11.13
+
+      - name: Restore Python package cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-python-3.11.13-synapse
+
+      - name: Install Python build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pybind11==2.13.6 nanobind==2.15.0 pytest
+          python -m pip install -e .
+
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-ccache-${{ env.LLVM_COMMIT }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.LLVM_COMMIT }}-
+
+      - name: Restore LLVM build
+        id: llvm-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: llvm-project
+          key: ${{ runner.os }}-llvm-python-3.11.13-${{ env.LLVM_COMMIT }}-${{ env.BUILD_TYPE }}-v2
+
+      - name: Build LLVM and MLIR
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${CCACHE_DIR}"
+          git init llvm-project
+          git -C llvm-project remote add origin https://github.com/llvm/llvm-project.git
+          git -C llvm-project fetch --depth=1 --filter=blob:none origin "${LLVM_COMMIT}"
+          git -C llvm-project checkout --detach FETCH_HEAD
+
+          cmake -G Ninja \
+            -S llvm-project/llvm \
+            -B llvm-project/build \
+            -DLLVM_ENABLE_PROJECTS="mlir;clang" \
+            -DLLVM_BUILD_EXAMPLES=OFF \
+            -DLLVM_TARGETS_TO_BUILD=Native \
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_CXX_FLAGS="-std=c++17 -frtti" \
+            -DLLVM_ENABLE_LLD=ON \
+            -DMLIR_INSTALL_AGGREGATE_OBJECTS=ON \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DLLVM_CCACHE_BUILD=ON \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DMLIR_BINDINGS_PYTHON_NB_DOMAIN=mlir \
+            -DPython3_EXECUTABLE="$(which python)" \
+            -DPython_EXECUTABLE="$(which python)" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+          cmake --build llvm-project/build --parallel 2
+
+      - name: Verify LLVM build
+        run: |
+          test -f llvm-project/build/lib/cmake/llvm/LLVMConfig.cmake
+          test -f llvm-project/build/lib/cmake/mlir/MLIRConfig.cmake
+          test -x llvm-project/build/bin/llvm-lit
+
+      - name: Save LLVM build
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: llvm-project
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+
+      - name: Configure Amoeba
+        run: |
+          cmake -G Ninja \
+            -S mlir/amoeba \
+            -B "${AMOEBA_BUILD_DIR}" \
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+            -DPython3_EXECUTABLE="$(which python)" \
+            -DPython_EXECUTABLE="$(which python)" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build Amoeba compiler and Python bindings
+        run: |
+          cmake --build "${AMOEBA_BUILD_DIR}" \
+            --target mlir-amoeba-opt AmoebaPythonModules \
+            --parallel 2
+
+      - name: Verify Amoeba build
+        run: |
+          test -x build/amoeba/tools/mlir-amoeba-opt/mlir-amoeba-opt
+          test -d build/amoeba/python_packages/amoeba_core/taskflow_mlir
+
+      - name: Run compiler integration tests
+        run: python -m pytest -q tests/python/compiler
+
+      - name: Save ccache
+        if: steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats
