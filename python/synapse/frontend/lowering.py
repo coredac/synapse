@@ -1,12 +1,14 @@
 """Lower Synapse Python programs to compiler input IR."""
 
 from collections.abc import Callable
+from functools import singledispatch
 
 from synapse.language.spatial import Tile
 from synapse.language.tile_array_program import (
     AddOp,
     ConstantOp,
     TileArrayBuilder,
+    TileArrayOp,
     TileArrayProgram,
     TileArrayScalarType,
 )
@@ -103,6 +105,41 @@ def _lower_tile_array_program(
                 }
             )
 
+        @singledispatch
+        def lower_operation(operation: TileArrayOp, operands, result_type):
+            """Lower one frontend TileArray operation to a Neura operation.
+
+            The caller handles common lowering such as resolving operands,
+            attaching placement, and recording the resulting SSA value.
+            """
+            raise NotImplementedError(
+                f"unsupported tile-array operation: {type(operation).__name__}"
+            )
+
+        @lower_operation.register
+        def lower_constant(operation: ConstantOp, operands, result_type):
+            """Lower a ConstantOp to neura.constant."""
+            if operands:
+                raise ValueError(
+                    f"ConstantOp requires zero operands, but got {len(operands)}"
+                )
+            return neura.ConstantOp(
+                result_type, get_constant_attribute(operation, result_type)
+            )
+
+        @lower_operation.register
+        def lower_add(operation: AddOp, operands, result_type):
+            """Lower a frontend AddOp to neura.add."""
+
+            if len(operands) != 2:
+                raise ValueError(
+                    f"AddOp requires two operands, but got {len(operands)}"
+                )
+
+            lhs, rhs = operands
+
+            return neura.AddOp(result_type, lhs, rhs=rhs)
+
         module = Module.create()
 
         # This milestone lowers one Python function into one task containing
@@ -150,30 +187,16 @@ def _lower_tile_array_program(
             for operation in program.operations:
                 result_type = get_mlir_type(operation.result.dtype)
 
-                if isinstance(operation, ConstantOp):
-                    mlir_operation = neura.ConstantOp(
-                        result_type,
-                        get_constant_attribute(operation, result_type),
-                    )
+                mlir_operands = tuple(
+                    values_by_id[operand.id] for operand in operation.operands
+                )
 
-                elif isinstance(operation, AddOp):
-                    lhs = values_by_id[operation.lhs.id]
-                    rhs = values_by_id[operation.rhs.id]
-
-                    mlir_operation = neura.AddOp(
-                        result_type,
-                        lhs,
-                        rhs=rhs,
-                    )
-
-                else:
-                    raise NotImplementedError(
-                        f"unsupported tile-array operation: {type(operation).__name__}"
-                    )
+                mlir_operation = lower_operation(operation, mlir_operands, result_type)
 
                 mlir_operation.operation.attributes["placement"] = get_placement(
                     operation.tile
                 )
+
                 values_by_id[operation.result.id] = mlir_operation.result
 
             neura.YieldOp(

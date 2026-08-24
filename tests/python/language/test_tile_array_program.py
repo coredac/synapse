@@ -27,7 +27,9 @@ def test_records_tile_array_program():
         array[0, 2],
         array[0, 1],
     ]
-    assert (add_op.lhs, add_op.rhs) == (lhs, rhs)
+    assert lhs_op.operands == ()
+    assert rhs_op.operands == ()
+    assert add_op.operands == (lhs, rhs)
 
 
 def test_infers_supported_scalar_types():

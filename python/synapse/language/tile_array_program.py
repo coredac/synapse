@@ -10,7 +10,6 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypeAlias
 
 from .spatial import Tile, TileArray
 
@@ -39,31 +38,30 @@ class TileArrayValue:
 # ---------------------------------------------------------------
 # Typed tile-array operations
 # ---------------------------------------------------------------
+@dataclass(frozen=True)
+class TileArrayOp:
+    """Base class for operations executed on a TileArray.
+
+    ``operands`` may contain any number of input values. Constants
+    therefore use an empty tuple, while operations such as add and MAC
+    use two or more operands.
+    """
+
+    result: TileArrayValue
+    operands: tuple[TileArrayValue, ...]
+    tile: Tile
 
 
 @dataclass(frozen=True)
-class ConstantOp:
+class ConstantOp(TileArrayOp):
     """A scalar constant produced by a tile-array operation."""
 
-    result: TileArrayValue
     value: int | float
-    tile: Tile
 
 
 @dataclass(frozen=True)
-class AddOp:
+class AddOp(TileArrayOp):
     """A scalar addition executed by a tile-array operation."""
-
-    result: TileArrayValue
-    lhs: TileArrayValue
-    rhs: TileArrayValue
-    tile: Tile
-
-
-# This union explicitly lists every operation currently supported by the
-# tile-array frontend. Future operations such as MacOp and GatherOp should be
-# added here.
-TileArrayOp: TypeAlias = ConstantOp | AddOp
 
 
 @dataclass(frozen=True)
@@ -126,8 +124,8 @@ class TileArrayBuilder:
                 "all operations in a TileArrayProgram must use tiles from the same TileArray"
             )
 
-    def _check_operand(self, operand: TileArrayValue) -> None:
-        """Verify that an operand was produced by this builder."""
+    def _validate_operand_for_builder(self, operand: TileArrayValue) -> None:
+        """Validate that an operand was produced by this builder."""
         if not isinstance(operand, TileArrayValue):
             raise TypeError("operation operand must be a TileArrayValue")
 
@@ -136,8 +134,8 @@ class TileArrayBuilder:
                 "operation operand belongs to a different TileArrayProgram"
             )
 
-    def _check_can_emit(self) -> None:
-        """Reject operations emitted after the program has been finalized."""
+    def _ensure_not_built(self) -> None:
+        """Reject operations emitted after the program has been built."""
         if self._is_built:
             raise RuntimeError(
                 "cannot emit operations after building a TileArrayProgram"
@@ -147,28 +145,30 @@ class TileArrayBuilder:
         self, value: int | float, *, dtype: TileArrayScalarType, tile: Tile
     ) -> TileArrayValue:
         """Record one scalar constant operation."""
-        self._check_can_emit()
+        self._ensure_not_built()
         self._bind_tile_array(tile)
         result = self._new_value(dtype=dtype)
 
-        self._operations.append(ConstantOp(result=result, value=value, tile=tile))
+        self._operations.append(
+            ConstantOp(result=result, operands=(), value=value, tile=tile)
+        )
         return result
 
     def emit_add(
         self, lhs: TileArrayValue, rhs: TileArrayValue, *, tile: Tile
     ) -> TileArrayValue:
         """Record one scalar addition operation."""
-        self._check_can_emit()
+        self._ensure_not_built()
         self._bind_tile_array(tile)
-        self._check_operand(lhs)
-        self._check_operand(rhs)
+        self._validate_operand_for_builder(lhs)
+        self._validate_operand_for_builder(rhs)
 
         if lhs.dtype != rhs.dtype:
             raise TypeError("add operands must have the same tile-array value type")
 
         result = self._new_value(dtype=lhs.dtype)
 
-        self._operations.append(AddOp(result=result, lhs=lhs, rhs=rhs, tile=tile))
+        self._operations.append(AddOp(result=result, operands=(lhs, rhs), tile=tile))
         return result
 
     def build(self) -> TileArrayProgram:

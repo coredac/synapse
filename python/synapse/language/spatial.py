@@ -42,8 +42,7 @@ class TileArray:
         self.y_tiles = y_tiles
 
         self._tiles = [
-            [Tile(x=x, y=y, array=self) for x in range(x_tiles)]
-            for y in range(y_tiles)
+            [Tile(x=x, y=y, array=self) for x in range(x_tiles)] for y in range(y_tiles)
         ]
 
     def tiles(self):
@@ -59,4 +58,11 @@ class TileArray:
         """Return the tile at the given ``(x, y)`` coordinate."""
 
         x, y = coordinate
+
+        if not (0 <= x < self.x_tiles and 0 <= y < self.y_tiles):
+            raise IndexError(
+                f"tile coordinate ({x}, {y}) is outside "
+                f"TileArray({self.x_tiles}, {self.y_tiles})"
+            )
+
         return self._tiles[y][x]
