@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from functools import singledispatch
+from typing import cast
 
 from synapse.language.spatial import Tile
 from synapse.language.tile_array_program import (
@@ -82,13 +83,9 @@ def _lower_tile_array_program(
             """Build the typed MLIR attribute for a constant value."""
 
             if operation.result.dtype == TileArrayScalarType.I32:
-                if not isinstance(operation.value, int):
-                    raise TypeError("an i32 constant requires an integer value")
-                return IntegerAttr.get(result_type, operation.value)
+                return IntegerAttr.get(result_type, cast(int, operation.value))
 
             if operation.result.dtype == TileArrayScalarType.F32:
-                if not isinstance(operation.value, (float, int)):
-                    raise TypeError("an f32 constant requires a numeric value")
                 return FloatAttr.get(result_type, float(operation.value))
 
             raise NotImplementedError(
@@ -119,10 +116,6 @@ def _lower_tile_array_program(
         @lower_operation.register
         def lower_constant(operation: ConstantOp, operands, result_type):
             """Lower a ConstantOp to neura.constant."""
-            if operands:
-                raise ValueError(
-                    f"ConstantOp requires zero operands, but got {len(operands)}"
-                )
             return neura.ConstantOp(
                 result_type, get_constant_attribute(operation, result_type)
             )
@@ -130,12 +123,6 @@ def _lower_tile_array_program(
         @lower_operation.register
         def lower_add(operation: AddOp, operands, result_type):
             """Lower a frontend AddOp to neura.add."""
-
-            if len(operands) != 2:
-                raise ValueError(
-                    f"AddOp requires two operands, but got {len(operands)}"
-                )
-
             lhs, rhs = operands
 
             return neura.AddOp(result_type, lhs, rhs=rhs)

@@ -7,6 +7,7 @@ the recorded program into Taskflow and Neura operations.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
@@ -58,10 +59,47 @@ class ConstantOp(TileArrayOp):
 
     value: int | float
 
+    def __post_init__(self) -> None:
+        """Validate the operation-specific operands and scalar value."""
+        if self.operands:
+            raise ValueError(
+                f"ConstantOp requires zero operands, but got {len(self.operands)}"
+            )
+
+        dtype = self.result.dtype
+        if not isinstance(dtype, TileArrayScalarType):
+            raise TypeError("ConstantOp result must use a TileArrayScalarType")
+
+        if isinstance(self.value, bool):
+            raise TypeError("boolean constants are not supported yet")
+
+        if dtype == TileArrayScalarType.I32 and not isinstance(self.value, int):
+            raise TypeError("an i32 constant requires an integer value")
+
+        if dtype == TileArrayScalarType.F32 and not isinstance(
+            self.value, (int, float)
+        ):
+            raise TypeError("an f32 constant requires a numeric value")
+
 
 @dataclass(frozen=True)
 class AddOp(TileArrayOp):
     """A scalar addition executed by a tile-array operation."""
+
+    def __post_init__(self) -> None:
+        """Validate the operation-specific arity and scalar types."""
+        if len(self.operands) != 2:
+            raise ValueError(
+                f"AddOp requires two operands, but got {len(self.operands)}"
+            )
+
+        lhs, rhs = self.operands
+
+        if lhs.dtype != rhs.dtype:
+            raise TypeError("AddOp operands must have the same scalar type")
+
+        if self.result.dtype != lhs.dtype:
+            raise TypeError("AddOp result type must match its operand type")
 
 
 @dataclass(frozen=True)
@@ -106,12 +144,6 @@ class TileArrayBuilder:
         _active_builder.reset(self._token)
         self._token = None
 
-    def _new_value(self, *, dtype: TileArrayScalarType) -> TileArrayValue:
-        """Allocate the next value identifier."""
-        result = TileArrayValue(id=self._next_value_id, dtype=dtype, _builder=self)
-        self._next_value_id += 1
-        return result
-
     def _bind_tile_array(self, tile: Tile) -> None:
         """Bind the program to one TileArray."""
         if not isinstance(tile, Tile):
@@ -141,34 +173,41 @@ class TileArrayBuilder:
                 "cannot emit operations after building a TileArrayProgram"
             )
 
-    def emit_constant(
-        self, value: int | float, *, dtype: TileArrayScalarType, tile: Tile
+    def emit(
+        self,
+        *,
+        operands: tuple[TileArrayValue, ...],
+        result_dtype: TileArrayScalarType,
+        tile: Tile,
+        create_operation: Callable[[TileArrayValue], TileArrayOp],
     ) -> TileArrayValue:
-        """Record one scalar constant operation."""
+        """Create and record one tile-array operation."""
         self._ensure_not_built()
         self._bind_tile_array(tile)
-        result = self._new_value(dtype=dtype)
 
-        self._operations.append(
-            ConstantOp(result=result, operands=(), value=value, tile=tile)
+        for operand in operands:
+            self._validate_operand_for_builder(operand)
+
+        # Commit the value ID only after operation construction and validation
+        # succeed, so a rejected operation does not consume a value ID.
+        result = TileArrayValue(
+            id=self._next_value_id,
+            dtype=result_dtype,
+            _builder=self,
         )
-        return result
+        operation = create_operation(result)
 
-    def emit_add(
-        self, lhs: TileArrayValue, rhs: TileArrayValue, *, tile: Tile
-    ) -> TileArrayValue:
-        """Record one scalar addition operation."""
-        self._ensure_not_built()
-        self._bind_tile_array(tile)
-        self._validate_operand_for_builder(lhs)
-        self._validate_operand_for_builder(rhs)
+        if not isinstance(operation, TileArrayOp):
+            raise TypeError("create_operation must return a TileArrayOp")
+        if operation.result is not result:
+            raise ValueError("create_operation must use the provided result value")
+        if operation.operands != operands:
+            raise ValueError("create_operation must use the provided operands")
+        if operation.tile is not tile:
+            raise ValueError("create_operation must use the provided tile")
 
-        if lhs.dtype != rhs.dtype:
-            raise TypeError("add operands must have the same tile-array value type")
-
-        result = self._new_value(dtype=lhs.dtype)
-
-        self._operations.append(AddOp(result=result, operands=(lhs, rhs), tile=tile))
+        self._operations.append(operation)
+        self._next_value_id += 1
         return result
 
     def build(self) -> TileArrayProgram:
@@ -217,32 +256,28 @@ def constant(
     Use an explicit dtype when a different representation is required:
         constant(1.0, tile=tile, dtype=TileArrayScalarType.F32)
     """
-    if isinstance(value, bool):
-        raise TypeError("boolean constants are not supported yet")
-
     if dtype is None:
-        if isinstance(value, int):
+        if type(value) is int:
             dtype = TileArrayScalarType.I32
-        elif isinstance(value, float):
+        elif type(value) is float:
             dtype = TileArrayScalarType.F32
         else:
             raise TypeError(
                 "constant currently supports integer and floating-point values"
             )
 
-    if not isinstance(dtype, TileArrayScalarType):
-        raise TypeError("dtype must be a TileArrayScalarType")
+    builder = _require_active_builder()
 
-    if dtype == TileArrayScalarType.I32 and not isinstance(value, int):
-        raise TypeError("an i32 constant requires an integer value")
-
-    if dtype in (TileArrayScalarType.F32,) and not isinstance(value, (int, float)):
-        raise TypeError("a floating-point constant requires a numeric value")
-
-    return _require_active_builder().emit_constant(
-        value,
-        dtype=dtype,
+    return builder.emit(
+        operands=(),
+        result_dtype=dtype,
         tile=tile,
+        create_operation=lambda result: ConstantOp(
+            result=result,
+            operands=(),
+            tile=tile,
+            value=value,
+        ),
     )
 
 
@@ -254,8 +289,16 @@ def add(
 ) -> TileArrayValue:
     """Create a scalar addition on one hardware tile."""
 
-    return _require_active_builder().emit_add(
-        lhs,
-        rhs,
+    builder = _require_active_builder()
+    operands = (lhs, rhs)
+
+    return builder.emit(
+        operands=operands,
+        result_dtype=lhs.dtype,
         tile=tile,
+        create_operation=lambda result: AddOp(
+            result=result,
+            operands=operands,
+            tile=tile,
+        ),
     )
