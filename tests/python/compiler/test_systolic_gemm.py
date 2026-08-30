@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import synapse
 import synapse.language as synl
 from synapse.frontend import lowering
 
@@ -59,7 +58,7 @@ def ws_gemm_4x4(
         # A[:, k] is streamed through one west boundary Port.
         activation = synl.input_port(
             A[:, k],
-            port=array.west[y],
+            port=array.west_ports[y],
         )
 
         for x in range(array.x_tiles):
@@ -75,7 +74,7 @@ def ws_gemm_4x4(
         synl.output_port(
             result,
             target=C[:, x],
-            port=array.south[x],
+            port=array.south_ports[x],
         )
 
 

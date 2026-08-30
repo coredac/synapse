@@ -8,6 +8,8 @@ Future spatial abstractions may expose inter-core structures, such as the
 core array of a multi-CGRA, AMD AIE/NPU, or Tenstorrent.
 """
 
+from typing import Literal
+
 
 class Tile:
     """A hardware tile in a CGRA TileArray.
@@ -20,6 +22,39 @@ class Tile:
         self.array = array
         self.x = x
         self.y = y
+
+
+PortDirection = Literal["west", "east", "north", "south"]
+
+
+class Port:
+    """A boundary data port of a CGRA TileArray.
+
+    ``direction`` identifies the array boundary. The ``x`` and ``y``
+    coordinates identify the boundary tile attached to this Port.
+
+    Ports expose hardware connectivity to the programming model. They do not
+    prescribe when data is transferred or introduce clock-based scheduling.
+    """
+
+    def __init__(
+        self,
+        *,
+        direction: PortDirection,
+        x: int,
+        y: int,
+        array: "TileArray",
+    ):
+        self.direction = direction
+        self.x = x
+        self.y = y
+        self.array = array
+
+    @property
+    def tile(self) -> Tile:
+        """Return the boundary tile attached to this Port."""
+
+        return self.array[self.x, self.y]
 
 
 class TileArray:
@@ -41,18 +76,27 @@ class TileArray:
         self.x_tiles = x_tiles
         self.y_tiles = y_tiles
 
-        self._tiles = [
-            [Tile(x=x, y=y, array=self) for x in range(x_tiles)] for y in range(y_tiles)
-        ]
+        self.tiles = tuple(
+            Tile(x=x, y=y, array=self) for y in range(y_tiles) for x in range(x_tiles)
+        )
 
-    def tiles(self):
-        """Iterate over all tiles in the array.
+        self.west_ports = tuple(
+            Port(direction="west", x=0, y=y, array=self) for y in range(y_tiles)
+        )
 
-        The iteration order is a Python programming convenience and
-        does not specify sequential hardware execution.
-        """
-        for y_row in self._tiles:
-            yield from y_row
+        self.east_ports = tuple(
+            Port(direction="east", x=x_tiles - 1, y=y, array=self)
+            for y in range(y_tiles)
+        )
+
+        self.north_ports = tuple(
+            Port(direction="north", x=x, y=y_tiles - 1, array=self)
+            for x in range(x_tiles)
+        )
+
+        self.south_ports = tuple(
+            Port(direction="south", x=x, y=0, array=self) for x in range(x_tiles)
+        )
 
     def __getitem__(self, coordinate: tuple[int, int]) -> Tile:
         """Return the tile at the given ``(x, y)`` coordinate."""
@@ -65,4 +109,4 @@ class TileArray:
                 f"TileArray({self.x_tiles}, {self.y_tiles})"
             )
 
-        return self._tiles[y][x]
+        return self.tiles[y * self.x_tiles + x]
