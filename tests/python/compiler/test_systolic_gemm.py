@@ -44,9 +44,9 @@ module {
 
 
 def ws_gemm_4x4(
-    A: synl.MemRef[4, 4, synl.i32],
-    B: synl.MemRef[4, 4, synl.i32],
-    C: synl.MemRef[4, 4, synl.i32],
+    A: synl.i32[4, 4],
+    B: synl.i32[4, 4],
+    C: synl.i32[4, 4],
 ):
     array = synl.TileArray(x_tiles=4, y_tiles=4)
 

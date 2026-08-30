@@ -10,21 +10,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from enum import Enum
 
 from .spatial import Tile, TileArray
-
-
-class TileArrayScalarType(str, Enum):
-    """The scalar types supported by the TileArray programming model.
-    This is intentionally independent of MLIR types. The lowering converts
-    these frontend types into the corresponding MLIR types.
-
-    Additional scalar types can be added here as the language grows.
-    """
-
-    I32 = "i32"
-    F32 = "f32"
+from .types import DType, f32, i32
 
 
 @dataclass(frozen=True)
@@ -32,7 +20,7 @@ class TileArrayValue:
     """A typed value produced by one tile-array operation."""
 
     id: int
-    dtype: TileArrayScalarType
+    dtype: DType
     _builder: TileArrayBuilder = field(repr=False)
 
 
@@ -43,9 +31,8 @@ class TileArrayValue:
 class TileArrayOp:
     """Base class for operations executed on a TileArray.
 
-    ``operands`` may contain any number of input values. Constants
-    therefore use an empty tuple, while operations such as add and MAC
-    use two or more operands.
+    ``operands`` may contain any number of input values. Constants use an
+    empty tuple, while operations such as add consume input values.
     """
 
     result: TileArrayValue
@@ -67,18 +54,16 @@ class ConstantOp(TileArrayOp):
             )
 
         dtype = self.result.dtype
-        if not isinstance(dtype, TileArrayScalarType):
-            raise TypeError("ConstantOp result must use a TileArrayScalarType")
+        if not isinstance(dtype, DType):
+            raise TypeError("ConstantOp result must use a DType")
 
         if isinstance(self.value, bool):
             raise TypeError("boolean constants are not supported yet")
 
-        if dtype == TileArrayScalarType.I32 and not isinstance(self.value, int):
+        if dtype == DType.I32 and not isinstance(self.value, int):
             raise TypeError("an i32 constant requires an integer value")
 
-        if dtype == TileArrayScalarType.F32 and not isinstance(
-            self.value, (int, float)
-        ):
+        if dtype == DType.F32 and not isinstance(self.value, (int, float)):
             raise TypeError("an f32 constant requires a numeric value")
 
 
@@ -177,7 +162,7 @@ class TileArrayBuilder:
         self,
         *,
         operands: tuple[TileArrayValue, ...],
-        result_dtype: TileArrayScalarType,
+        result_dtype: DType,
         tile: Tile,
         create_operation: Callable[[TileArrayValue], TileArrayOp],
     ) -> TileArrayValue:
@@ -248,19 +233,19 @@ def _require_active_builder() -> TileArrayBuilder:
 # User-facing tile-array program DSL
 # ---------------------------------------------------------------
 def constant(
-    value: int | float, *, tile: Tile, dtype: TileArrayScalarType | None = None
+    value: int | float, *, tile: Tile, dtype: DType | None = None
 ) -> TileArrayValue:
     """Create a scalar constant on one hardware tile.
 
     Integer literals default to i32. Floating-point literals default to f32.
     Use an explicit dtype when a different representation is required:
-        constant(1.0, tile=tile, dtype=TileArrayScalarType.F32)
+        constant(1.0, tile=tile, dtype=DType.F32)
     """
     if dtype is None:
         if type(value) is int:
-            dtype = TileArrayScalarType.I32
+            dtype = DType.I32
         elif type(value) is float:
-            dtype = TileArrayScalarType.F32
+            dtype = DType.F32
         else:
             raise TypeError(
                 "constant currently supports integer and floating-point values"

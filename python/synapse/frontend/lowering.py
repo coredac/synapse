@@ -11,8 +11,8 @@ from synapse.language.tile_array_program import (
     TileArrayBuilder,
     TileArrayOp,
     TileArrayProgram,
-    TileArrayScalarType,
 )
+from synapse.language.types import DType
 
 
 def lower(program_fn: Callable) -> str:
@@ -61,19 +61,19 @@ def _lower_tile_array_program(
         taskflow.register_dialect()
         neura.register_dialect()
 
-        i32 = IntegerType.get_signless(32)
+        i32_type = IntegerType.get_signless(32)
 
-        def get_mlir_type(dtype: TileArrayScalarType):
-            """Translate a frontend scalar type into an MLIR type."""
+        def get_mlir_type(dtype: DType):
+            """Translate a frontend data type into an MLIR type."""
 
-            if dtype == TileArrayScalarType.I32:
-                return i32
+            if dtype == DType.I32:
+                return i32_type
 
-            if dtype == TileArrayScalarType.F32:
+            if dtype == DType.F32:
                 return F32Type.get()
 
             raise NotImplementedError(
-                f"unsupported tile-array scalar type: {dtype.value}"
+                f"unsupported tile-array data type: {dtype.value}"
             )
 
         def get_constant_attribute(
@@ -82,10 +82,10 @@ def _lower_tile_array_program(
         ):
             """Build the typed MLIR attribute for a constant value."""
 
-            if operation.result.dtype == TileArrayScalarType.I32:
+            if operation.result.dtype == DType.I32:
                 return IntegerAttr.get(result_type, cast(int, operation.value))
 
-            if operation.result.dtype == TileArrayScalarType.F32:
+            if operation.result.dtype == DType.F32:
                 return FloatAttr.get(result_type, float(operation.value))
 
             raise NotImplementedError(
@@ -97,8 +97,8 @@ def _lower_tile_array_program(
 
             return DictAttr.get(
                 {
-                    "x": IntegerAttr.get(i32, tile.x),
-                    "y": IntegerAttr.get(i32, tile.y),
+                    "x": IntegerAttr.get(i32_type, tile.x),
+                    "y": IntegerAttr.get(i32_type, tile.y),
                 }
             )
 
