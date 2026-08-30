@@ -8,7 +8,6 @@ from synapse.language.spatial import Tile
 from synapse.language.tile_array_program import (
     AddOp,
     ConstantOp,
-    MacOp,
     TileArrayBuilder,
     TileArrayOp,
     TileArrayProgram,
@@ -127,31 +126,6 @@ def _lower_tile_array_program(
             lhs, rhs = operands
 
             return neura.AddOp(result_type, lhs, rhs=rhs)
-
-        @lower_operation.register
-        def lower_mac(operation: MacOp, operands, result_type):
-            """Lower a frontend MacOp to the matching Neura fused operation."""
-            lhs, rhs, accumulator = operands
-
-            if operation.result.dtype == TileArrayScalarType.I32:
-                return neura.MulAddOp(
-                    result_type,
-                    lhs,
-                    rhs,
-                    accumulator,
-                )
-
-            if operation.result.dtype == TileArrayScalarType.F32:
-                return neura.FMulFAddOp(
-                    result_type,
-                    lhs,
-                    rhs,
-                    accumulator,
-                )
-
-            raise NotImplementedError(
-                f"unsupported MacOp scalar type: {operation.result.dtype.value}"
-            )
 
         module = Module.create()
 

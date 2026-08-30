@@ -103,26 +103,6 @@ class AddOp(TileArrayOp):
 
 
 @dataclass(frozen=True)
-class MacOp(TileArrayOp):
-    """A scalar multiply-accumulate operation executed on a TileArray."""
-
-    def __post_init__(self) -> None:
-        """Validate the operation-specific arity and scalar types."""
-
-        if len(self.operands) != 3:
-            raise ValueError(
-                f"MacOp requires three operands, but got {len(self.operands)}"
-            )
-        lhs, rhs, accumulator = self.operands
-
-        if not (lhs.dtype == rhs.dtype == accumulator.dtype):
-            raise TypeError("MacOp operands must have the same scalar type")
-
-        if self.result.dtype != lhs.dtype:
-            raise TypeError("MacOp result type must match its operand type")
-
-
-@dataclass(frozen=True)
 class TileArrayProgram:
     """A tile-array program produced by TileArrayBuilder."""
 
@@ -317,28 +297,6 @@ def add(
         result_dtype=lhs.dtype,
         tile=tile,
         create_operation=lambda result: AddOp(
-            result=result,
-            operands=operands,
-            tile=tile,
-        ),
-    )
-
-
-def mac(
-    lhs: TileArrayValue,
-    rhs: TileArrayValue,
-    accumulator: TileArrayValue,
-    *,
-    tile: Tile,
-) -> TileArrayValue:
-    """Create a scalar multiply-accumulate operation on one hardware tile."""
-    builder = _require_active_builder()
-    operands = (lhs, rhs, accumulator)
-    return builder.emit(
-        operands=operands,
-        result_dtype=lhs.dtype,
-        tile=tile,
-        create_operation=lambda result: MacOp(
             result=result,
             operands=operands,
             tile=tile,
