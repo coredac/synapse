@@ -6,9 +6,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from synapse.frontend.lowering import lower
+from synapse.language.types import TensorType
 
 
-def compile(program: Callable, *, target: str) -> str:
+def compile(
+    program: Callable,
+    *,
+    target: str,
+    argument_types: tuple[TensorType, ...] = (),
+) -> str:
     """Compile a Synapse program for the selected backend."""
 
     # We only support the Neura backend for now, so we raise an error if the user tries to compile for any other target.
@@ -16,7 +22,7 @@ def compile(program: Callable, *, target: str) -> str:
         raise ValueError(f"unsupported compilation target: {target}")
     # TODO: Support the amoeba backend.
 
-    neura_ir = lower(program)
+    neura_ir = lower(program, argument_types=argument_types)
     return _run_neura_backend(neura_ir)
 
 
@@ -41,6 +47,7 @@ def _run_neura_backend(neura_ir: str) -> str:
 
         command = [
             str(amoeba_opt),
+            "--promote-input-arg-to-const",
             "--leverage-predicated-value",
             "--insert-data-mov",
             (
