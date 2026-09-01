@@ -10,9 +10,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from enum import Enum
 
-from .spatial import Tile, TileArray
-from .types import DType, f32, i32
+from .spatial import Port, Tile, TileArray
+from .tensor import Tensor, TensorAccess
+from .types import DType
+
+
+class StationaryMode(Enum):
+    """The dataflow operand retained locally by configured MACs."""
+
+    WEIGHT = "weight"
+    INPUT = "input"
+    OUTPUT = "output"
 
 
 @dataclass(frozen=True)
@@ -22,6 +32,24 @@ class TileArrayValue:
     id: int
     dtype: DType
     _builder: TileArrayBuilder = field(repr=False)
+
+
+@dataclass(frozen=True)
+class InputPortBinding:
+    """A tensor slice bound to one TileArray input Port."""
+
+    input_des: TileArrayValue
+    input_src: TensorAccess
+    port: Port
+
+
+@dataclass(frozen=True)
+class OutputPortBinding:
+    """A TileArray value bound to a tensor output slice and Port."""
+
+    output_src: TileArrayValue
+    output_des: TensorAccess
+    port: Port
 
 
 # ---------------------------------------------------------------
@@ -88,11 +116,55 @@ class AddOp(TileArrayOp):
 
 
 @dataclass(frozen=True)
+class MacOp(TileArrayOp):
+    """A configured MAC using one stationary scalar value."""
+
+    stationary_value: TensorAccess
+    stationary_mode: StationaryMode
+
+    def __post_init__(self) -> None:
+        """Validates configured MAC operands and stationary data."""
+
+        if self.stationary_mode in (
+            StationaryMode.WEIGHT,
+            StationaryMode.INPUT,
+        ) and len(self.operands) not in (1, 2):
+            raise ValueError(
+                "weight/input-stationary MacOp requires "
+                "an input and optional partial sum"
+            )
+
+        if self.stationary_mode == StationaryMode.OUTPUT and len(self.operands) != 2:
+            raise ValueError("output-stationary MacOp requires two multiplicands")
+
+        if not self.stationary_value.is_scalar:
+            raise ValueError("stationary data must identify one scalar")
+        if any(operand.dtype != self.result.dtype for operand in self.operands):
+            raise TypeError("MacOp operands and result must have the same dtype")
+        if self.stationary_value.dtype != self.result.dtype:
+            raise TypeError("MacOp stationary data and result must have the same dtype")
+
+
+@dataclass(frozen=True)
+class StationaryBinding:
+    """Stationary data assigned to the tiles of one template program."""
+
+    mode: StationaryMode
+    source: Tensor
+    tile_values: tuple[tuple[Tile, TensorAccess], ...]
+
+
+@dataclass(frozen=True)
 class TileArrayProgram:
     """A tile-array program produced by TileArrayBuilder."""
 
     array: TileArray
+    arguments: tuple[Tensor, ...]
+    input_ports: tuple[InputPortBinding, ...]
+    output_ports: tuple[OutputPortBinding, ...]
     operations: tuple[TileArrayOp, ...]
+    template_name: str | None
+    stationary: StationaryBinding | None
 
 
 # ---------------------------------------------------------------
@@ -105,15 +177,18 @@ class TileArrayBuilder:
     is called, it returns a TileArrayProgram.
     """
 
-    def __init__(self):
+    def __init__(self, arguments: tuple[Tensor, ...] = ()):
+        self._arguments = arguments
         self._array: TileArray | None = None
+        self._input_ports: list[InputPortBinding] = []
+        self._output_ports: list[OutputPortBinding] = []
         self._operations: list[TileArrayOp] = []
         self._next_value_id = 0
         self._token = None
         self._is_built = False
 
     def __enter__(self):
-        """Make this builder active for tile-array DSL calls."""
+        """Makes this builder active for tile-array DSL calls."""
         if _active_builder.get() is not None:
             raise RuntimeError("Cannot enter a nested TileArrayBuilder context")
         if self._token is not None:
@@ -122,27 +197,25 @@ class TileArrayBuilder:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        """Restore the previously active builder."""
+        """Restores the previously active builder."""
         if self._token is None:
             raise RuntimeError("TileArrayBuilder is not active")
 
         _active_builder.reset(self._token)
         self._token = None
 
-    def _bind_tile_array(self, tile: Tile) -> None:
-        """Bind the program to one TileArray."""
-        if not isinstance(tile, Tile):
-            raise TypeError("tile must be a Tile")
+    def _bind_tile_array(self, array: TileArray) -> None:
+        """Binds the program to one TileArray."""
         if self._array is None:
-            self._array = tile.array
+            self._array = array
             return
-        if tile.array is not self._array:
+        if array is not self._array:
             raise ValueError(
                 "all operations in a TileArrayProgram must use tiles from the same TileArray"
             )
 
     def _validate_operand_for_builder(self, operand: TileArrayValue) -> None:
-        """Validate that an operand was produced by this builder."""
+        """Validates that an operand was produced by this builder."""
         if not isinstance(operand, TileArrayValue):
             raise TypeError("operation operand must be a TileArrayValue")
 
@@ -152,7 +225,7 @@ class TileArrayBuilder:
             )
 
     def _ensure_not_built(self) -> None:
-        """Reject operations emitted after the program has been built."""
+        """Rejects operations emitted after the program has been built."""
         if self._is_built:
             raise RuntimeError(
                 "cannot emit operations after building a TileArrayProgram"
@@ -166,9 +239,9 @@ class TileArrayBuilder:
         tile: Tile,
         create_operation: Callable[[TileArrayValue], TileArrayOp],
     ) -> TileArrayValue:
-        """Create and record one tile-array operation."""
+        """Creates and record one tile-array operation."""
         self._ensure_not_built()
-        self._bind_tile_array(tile)
+        self._bind_tile_array(tile.array)
 
         for operand in operands:
             self._validate_operand_for_builder(operand)
@@ -195,6 +268,47 @@ class TileArrayBuilder:
         self._next_value_id += 1
         return result
 
+    def add_input_port(self, *, source: TensorAccess, port: Port) -> TileArrayValue:
+        """Creates one scalar kernel input and bind it to a Port."""
+        self._ensure_not_built()
+        if source.is_scalar:
+            raise ValueError("an input Port requires a tensor slice")
+
+        if sum(isinstance(index, slice) for index in source.indices) != 1:
+            raise ValueError("an input Port currently supports one varying dimension")
+
+        self._bind_tile_array(port.array)
+
+        result = TileArrayValue(
+            id=self._next_value_id, dtype=source.dtype, _builder=self
+        )
+        self._next_value_id += 1
+        self._input_ports.append(
+            InputPortBinding(input_src=source, input_des=result, port=port)
+        )
+        return result
+
+    def add_output_port(
+        self, *, value: TileArrayValue, target: TensorAccess, port: Port
+    ) -> None:
+        """Bind one kernel result to an output slice and Port."""
+        self._ensure_not_built()
+        self._validate_operand_for_builder(value)
+
+        if target.is_scalar:
+            raise ValueError("an output Port requires a tensor slice")
+        if sum(isinstance(index, slice) for index in target.indices) != 1:
+            raise ValueError("an output Port currently supports one varying dimension")
+
+        if target.dtype != value.dtype:
+            raise TypeError("output value and target must have the same dtype")
+
+        self._bind_tile_array(port.array)
+
+        self._output_ports.append(
+            OutputPortBinding(output_src=value, output_des=target, port=port)
+        )
+
     def build(self) -> TileArrayProgram:
         """Finish recording and return a program."""
         if self._token is not None:
@@ -205,8 +319,52 @@ class TileArrayBuilder:
             raise RuntimeError(
                 "cannot build an empty TileArrayProgram without a TileArray"
             )
+
+        mac_operations = [
+            operation for operation in self._operations if isinstance(operation, MacOp)
+        ]
+
+        stationary = None
+        template_name = None
+
+        if mac_operations:
+            stationary_mode = mac_operations[0].stationary_mode
+            stationary_source = mac_operations[0].stationary_value.source
+
+            if any(
+                operation.stationary_mode != stationary_mode
+                for operation in mac_operations
+            ):
+                raise ValueError(
+                    "all configured MACs in one template must use one stationary mode"
+                )
+            if any(
+                operation.stationary_value.source is not stationary_source
+                for operation in mac_operations
+            ):
+                raise ValueError("all configured MACs must use one stationary source")
+            stationary = StationaryBinding(
+                mode=stationary_mode,
+                source=stationary_source,
+                tile_values=tuple(
+                    (operation.tile, operation.stationary_value)
+                    for operation in mac_operations
+                ),
+            )
+            # Configured MAC networks currently use the systolic template.
+            # Template registration will replace this inference later.
+            template_name = "systolic_array"
+
         self._is_built = True
-        return TileArrayProgram(array=self._array, operations=tuple(self._operations))
+        return TileArrayProgram(
+            array=self._array,
+            arguments=self._arguments,
+            input_ports=tuple(self._input_ports),
+            output_ports=tuple(self._output_ports),
+            operations=tuple(self._operations),
+            template_name=template_name,
+            stationary=stationary,
+        )
 
 
 # The active builder is compiler-internal state. Public DSL calls use it to
@@ -285,5 +443,67 @@ def add(
             result=result,
             operands=operands,
             tile=tile,
+        ),
+    )
+
+
+def input_port(source: TensorAccess, *, port: Port) -> TileArrayValue:
+    """Reads one tensor slice through a TileArray input port."""
+    if not isinstance(source, TensorAccess):
+        raise TypeError("input_port source must be a tensor access")
+    if not isinstance(port, Port):
+        raise TypeError("input_port port must be a Port")
+    return _require_active_builder().add_input_port(source=source, port=port)
+
+
+def output_port(value: TileArrayValue, *, target: TensorAccess, port: Port) -> None:
+    """Write one TileArray value stream through an output Port."""
+
+    if not isinstance(target, TensorAccess):
+        raise TypeError("output_port target must be a tensor access")
+
+    if not isinstance(port, Port):
+        raise TypeError("output_port port must be a Port")
+
+    _require_active_builder().add_output_port(value=value, target=target, port=port)
+
+
+def mac(
+    input0: TileArrayValue,
+    input1: TileArrayValue | None,
+    *,
+    stationary: TensorAccess,
+    mode: StationaryMode,
+    tile: Tile,
+) -> TileArrayValue:
+    """Create one configured MAC operation.
+
+    Operand meanings depend on the selected stationary mode:
+
+    - WEIGHT: input0 is activation, input1 is an optional partial sum.
+    - INPUT: input0 is weight, input1 is an optional partial sum.
+    - OUTPUT: input0 and input1 are the two multiplicands.
+    """
+
+    if not isinstance(stationary, TensorAccess):
+        raise TypeError("mac stationary data must be a tensor access")
+
+    if not isinstance(mode, StationaryMode):
+        raise TypeError("mac mode must be a StationaryMode")
+
+    operands = (input0,) if input1 is None else (input0, input1)
+
+    builder = _require_active_builder()
+
+    return builder.emit(
+        operands=operands,
+        result_dtype=input0.dtype,
+        tile=tile,
+        create_operation=lambda result: MacOp(
+            result=result,
+            operands=operands,
+            tile=tile,
+            stationary_value=stationary,
+            stationary_mode=mode,
         ),
     )

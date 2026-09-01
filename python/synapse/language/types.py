@@ -17,16 +17,13 @@ class DType(Enum):
     I32 = "i32"
     F32 = "f32"
 
-    def __getitem__(self, shape: int | tuple[int, ...]) -> ShapedType:
-        """Create a shaped type with this data element type."""
+    def __getitem__(self, shape: int | tuple[int, ...]) -> TensorType:
+        """Create a tensor type with this data element type."""
 
         if not isinstance(shape, tuple):
             shape = (shape,)
 
-        return ShapedType(
-            shape=shape,
-            dtype=self,
-        )
+        return TensorType(shape=shape, dtype=self)
 
     def __str__(self) -> str:
         """Return the source-level spelling of this type."""
@@ -35,26 +32,25 @@ class DType(Enum):
 
 
 @dataclass(frozen=True)
-class ShapedType:
-    """The shape and scalar element type of a Synapse program value.
+class TensorType:
+    """The shape and scalar element type of a Synapse tensor.
 
-    ShapedType does not prescribe whether compiler lowering uses a tensor,
-    MemRef, or another backend representation.
+    TensorType does not prescribe its later bufferized representation.
     """
 
     shape: tuple[int, ...]
     dtype: DType
 
     def __post_init__(self) -> None:
-        """Validate the dimensions and scalar element type."""
+        """Validates the dimensions and element type."""
 
         if not self.shape:
-            raise TypeError("a shaped type requires at least one dimension")
+            raise TypeError("a tensor type requires at least one dimension")
 
         if not all(
             type(dimension) is int and dimension > 0 for dimension in self.shape
         ):
-            raise TypeError("shape dimensions must be positive integers")
+            raise TypeError("tensor dimensions must be positive integers")
 
         if not isinstance(self.dtype, DType):
             raise TypeError("dtype must be a DType")

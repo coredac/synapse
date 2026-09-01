@@ -1,14 +1,28 @@
 """Public Synapse language API."""
 
 from .spatial import TileArray
-from .tile_array_program import add, constant
-from .types import DType, f32, i32
+from .tensor import Tensor
+from .tile_array_program import (
+    StationaryMode,
+    add,
+    constant,
+    input_port,
+    mac,
+    output_port,
+)
+from .types import DType, TensorType, f32, i32
 
 __all__ = [
     "DType",
+    "StationaryMode",
+    "Tensor",
+    "TensorType",
     "TileArray",
     "add",
     "constant",
     "f32",
     "i32",
+    "input_port",
+    "mac",
+    "output_port",
 ]
