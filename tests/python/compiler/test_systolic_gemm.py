@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import synapse.language as synl
 from synapse.frontend import lowering
 
@@ -43,14 +41,10 @@ module {
 """.strip()
 
 
-def ws_gemm_4x4(
-    A: synl.i32[4, 4],
-    B: synl.i32[4, 4],
-    C: synl.i32[4, 4],
-):
+def ws_gemm_4x4(A: synl.Tensor, B: synl.Tensor, C: synl.Tensor):
     array = synl.TileArray(x_tiles=4, y_tiles=4)
 
-    partial_sums = [None] * array.x_tiles
+    partial_sums = []
 
     for k in range(array.y_tiles):
         y = array.y_tiles - 1 - k
@@ -61,13 +55,16 @@ def ws_gemm_4x4(
             port=array.west_ports[y],
         )
 
-        for x in range(array.x_tiles):
-            partial_sums[x] = synl.mac(
+        partial_sums = [
+            synl.mac(
                 activation,
-                partial_sums[x],
-                weight=B[k, x],
+                partial_sums[x] if partial_sums else None,
+                stationary=B[k, x],
+                mode=synl.StationaryMode.WEIGHT,
                 tile=array[x, y],
             )
+            for x in range(array.x_tiles)
+        ]
 
     for x, result in enumerate(partial_sums):
         # Each south Port writes one column of C.
@@ -79,6 +76,13 @@ def ws_gemm_4x4(
 
 
 def test_lowers_systolic_gemm_to_exact_pre_mapping_ir():
-    actual = lowering.lower(ws_gemm_4x4)
+    actual = lowering.lower(
+        ws_gemm_4x4,
+        argument_types=(
+            synl.i32[4, 4],
+            synl.i32[4, 4],
+            synl.i32[4, 4],
+        ),
+    )
 
     assert actual.strip() == PRE_MAPPING_IR
