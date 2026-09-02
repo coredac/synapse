@@ -1,6 +1,7 @@
 import synapse
 import synapse.language as synl
 from synapse.frontend import lowering
+from synapse.templates.tile_array import ws_gemm_4x4
 
 PRE_MAPPING_IR = """
 #map = affine_map<(d0) -> (d0, 0)>
@@ -112,40 +113,6 @@ module {
   }
 }
 """.strip()
-
-
-def ws_gemm_4x4(A: synl.Tensor, B: synl.Tensor, C: synl.Tensor):
-    array = synl.TileArray(x_tiles=4, y_tiles=4)
-
-    partial_sums = []
-
-    for k in range(array.y_tiles):
-        y = array.y_tiles - 1 - k
-
-        # A[:, k] is streamed through one west boundary Port.
-        activation = synl.input_port(
-            A[:, k],
-            port=array.west_ports[y],
-        )
-
-        partial_sums = [
-            synl.mac(
-                activation,
-                partial_sums[x] if partial_sums else None,
-                stationary=B[k, x],
-                mode=synl.StationaryMode.WEIGHT,
-                tile=array[x, y],
-            )
-            for x in range(array.x_tiles)
-        ]
-
-    for x, result in enumerate(partial_sums):
-        # Each south Port writes one column of C.
-        synl.output_port(
-            result,
-            target=C[:, x],
-            port=array.south_ports[x],
-        )
 
 
 def test_lowers_systolic_gemm_to_exact_pre_mapping_ir():
