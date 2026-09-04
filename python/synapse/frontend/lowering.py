@@ -11,7 +11,6 @@ from synapse.language.tile_array_program import (
     AddOp,
     ConstantOp,
     MacOp,
-    StationaryMode,
     TileArrayBuilder,
     TileArrayOp,
     TileArrayProgram,
@@ -130,11 +129,6 @@ def _lower_tile_array_program(
             if program.stationary is None:
                 raise RuntimeError("template program requires stationary data")
 
-            if program.stationary.mode != StationaryMode.WEIGHT:
-                raise NotImplementedError(
-                    "only weight-stationary template lowering is implemented initially"
-                )
-
             for tile, access in program.stationary.tile_values:
                 expected_indices = (program.array.y_tiles - 1 - tile.y, tile.x)
 
@@ -157,15 +151,16 @@ def _lower_tile_array_program(
             result_type,
         ):
             """Build the typed MLIR attribute for a constant value."""
+            result = operation.results[0]
 
-            if operation.result.dtype == DType.I32:
+            if result.dtype == DType.I32:
                 return IntegerAttr.get(result_type, cast(int, operation.value))
 
-            if operation.result.dtype == DType.F32:
+            if result.dtype == DType.F32:
                 return FloatAttr.get(result_type, float(operation.value))
 
             raise NotImplementedError(
-                f"unsupported constant type: {operation.result.dtype.value}"
+                f"unsupported constant type: {result.dtype.value}"
             )
 
         def get_placement(tile: Tile) -> DictAttr:
@@ -219,7 +214,6 @@ def _lower_tile_array_program(
                 {
                     "kernel_input": IntegerAttr.get(i32_type, len(program.input_ports)),
                     "map": get_stationary_map(),
-                    "mode": StringAttr.get(program.stationary.mode.value),
                 }
             )
 
@@ -240,7 +234,7 @@ def _lower_tile_array_program(
             )
 
         @singledispatch
-        def lower_operation(operation: TileArrayOp, operands, result_type):
+        def lower_operation(operation: TileArrayOp, operands, result_types):
             """Lower one frontend TileArray operation to a Neura operation.
 
             The caller handles common lowering such as resolving operands,
@@ -251,31 +245,32 @@ def _lower_tile_array_program(
             )
 
         @lower_operation.register
-        def lower_constant(operation: ConstantOp, operands, result_type):
+        def lower_constant(operation: ConstantOp, operands, result_types):
             """Lower a ConstantOp to neura.constant."""
             return neura.ConstantOp(
-                result_type, get_constant_attribute(operation, result_type)
+                result_types[0], get_constant_attribute(operation, result_types[0])
             )
 
         @lower_operation.register
-        def lower_add(operation: AddOp, operands, result_type):
+        def lower_add(operation: AddOp, operands, result_types):
             """Lower a frontend AddOp to neura.add."""
             lhs, rhs = operands
 
-            return neura.AddOp(result_type, lhs, rhs=rhs)
+            return neura.AddOp(result_types[0], lhs, rhs=rhs)
 
         @lower_operation.register
-        def lower_mac(operation: MacOp, operands, result_type):
+        def lower_mac(operation: MacOp, operands, result_types):
             """Lower a configured MacOp to neura.mac."""
 
             input0 = operands[0]
 
             input1 = operands[1] if len(operands) == 2 else None
+            accumulated_type, forwarded_type = result_types
 
             return neura.MacOp(
-                result_type,
+                accumulated_type,
+                forwarded_type,
                 input0,
-                StringAttr.get(operation.stationary_mode.value),
                 input1=input1,
             )
 
@@ -420,19 +415,31 @@ def _lower_tile_array_program(
 
         with InsertionPoint(kernel_block):
             for operation in program.operations:
-                result_type = get_mlir_type(operation.result.dtype)
+                result_types = tuple(
+                    get_mlir_type(result.dtype) for result in operation.results
+                )
 
                 mlir_operands = tuple(
                     values_by_id[operand.id] for operand in operation.operands
                 )
 
-                mlir_operation = lower_operation(operation, mlir_operands, result_type)
+                mlir_operation = lower_operation(operation, mlir_operands, result_types)
 
                 mlir_operation.operation.attributes["placement"] = get_placement(
                     operation.tile
                 )
 
-                values_by_id[operation.result.id] = mlir_operation.result
+                mlir_results = tuple(mlir_operation.results)
+
+                if len(mlir_results) != len(operation.results):
+                    raise RuntimeError(
+                        "frontend and MLIR operation result counts differ"
+                    )
+
+                for frontend_result, mlir_result in zip(
+                    operation.results, mlir_results
+                ):
+                    values_by_id[frontend_result.id] = mlir_result
 
             neura.YieldOp(
                 iter_args_next=[],

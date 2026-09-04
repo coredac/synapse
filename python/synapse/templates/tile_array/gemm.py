@@ -8,7 +8,7 @@ def ws_gemm_4x4(
     B: synl.Tensor,
     C: synl.Tensor,
 ):
-    """Describe a fixed 4x4 weight-stationary GEMM."""
+    """Describes a fixed 4x4 weight-stationary GEMM."""
 
     array = synl.TileArray(x_tiles=4, y_tiles=4)
 
@@ -17,29 +17,30 @@ def ws_gemm_4x4(
     for k in range(array.y_tiles):
         y = array.y_tiles - 1 - k
 
-        # Stream one column of A through the corresponding west Port.
-        activation = synl.input_port(
+        # A[:, k] enters from the west boundary ports and flows east across this row.
+        flowing = synl.input_port(
             A[:, k],
             port=array.west_ports[y],
         )
 
-        # Each Tile keeps one value from B stationary while partial sums
-        # propagate toward the south boundary.
-        partial_sums = [
-            synl.mac(
-                activation,
+        next_partial_sums = []
+
+        for x in range(array.x_tiles):
+            accumulated, flowing = synl.mac(
+                flowing,
                 partial_sums[x] if partial_sums else None,
                 stationary=B[k, x],
-                mode=synl.StationaryMode.WEIGHT,
                 tile=array[x, y],
             )
-            for x in range(array.x_tiles)
-        ]
 
-    for x, result in enumerate(partial_sums):
+            next_partial_sums.append(accumulated)
+
+        partial_sums = next_partial_sums
+
+    for x, accumulated in enumerate(partial_sums):
         # Each south Port writes one result column into C.
         synl.output_port(
-            result,
+            accumulated,
             target=C[:, x],
             port=array.south_ports[x],
         )

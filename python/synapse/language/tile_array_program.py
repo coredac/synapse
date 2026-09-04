@@ -10,19 +10,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from enum import Enum
 
 from .spatial import Port, Tile, TileArray
 from .tensor import Tensor, TensorAccess
 from .types import DType
-
-
-class StationaryMode(Enum):
-    """The dataflow operand retained locally by configured MACs."""
-
-    WEIGHT = "weight"
-    INPUT = "input"
-    OUTPUT = "output"
 
 
 @dataclass(frozen=True)
@@ -63,7 +54,7 @@ class TileArrayOp:
     empty tuple, while operations such as add consume input values.
     """
 
-    result: TileArrayValue
+    results: tuple[TileArrayValue, ...]
     operands: tuple[TileArrayValue, ...]
     tile: Tile
 
@@ -75,13 +66,17 @@ class ConstantOp(TileArrayOp):
     value: int | float
 
     def __post_init__(self) -> None:
-        """Validate the operation-specific operands and scalar value."""
+        """Validates the operation-specific operands and scalar value."""
+        if len(self.results) != 1:
+            raise ValueError("ConstantOp requires exactly one result")
+
         if self.operands:
             raise ValueError(
                 f"ConstantOp requires zero operands, but got {len(self.operands)}"
             )
 
-        dtype = self.result.dtype
+        result = self.results[0]
+        dtype = result.dtype
         if not isinstance(dtype, DType):
             raise TypeError("ConstantOp result must use a DType")
 
@@ -100,18 +95,22 @@ class AddOp(TileArrayOp):
     """A scalar addition executed by a tile-array operation."""
 
     def __post_init__(self) -> None:
-        """Validate the operation-specific arity and scalar types."""
+        """Validates the operation-specific arity and scalar types."""
+        if len(self.results) != 1:
+            raise ValueError("AddOp requires exactly one result")
+
         if len(self.operands) != 2:
             raise ValueError(
                 f"AddOp requires two operands, but got {len(self.operands)}"
             )
 
+        result = self.results[0]
         lhs, rhs = self.operands
 
         if lhs.dtype != rhs.dtype:
             raise TypeError("AddOp operands must have the same scalar type")
 
-        if self.result.dtype != lhs.dtype:
+        if result.dtype != lhs.dtype:
             raise TypeError("AddOp result type must match its operand type")
 
 
@@ -120,36 +119,40 @@ class MacOp(TileArrayOp):
     """A configured MAC using one stationary scalar value."""
 
     stationary_value: TensorAccess
-    stationary_mode: StationaryMode
+
+    @property
+    def accumulated(self) -> TileArrayValue:
+        """Returns the accumulated output value."""
+
+        return self.results[0]
+
+    @property
+    def forwarded(self) -> TileArrayValue:
+        """Returns the value forwarded from input0."""
+
+        return self.results[1]
 
     def __post_init__(self) -> None:
         """Validates configured MAC operands and stationary data."""
 
-        if self.stationary_mode in (
-            StationaryMode.WEIGHT,
-            StationaryMode.INPUT,
-        ) and len(self.operands) not in (1, 2):
-            raise ValueError(
-                "weight/input-stationary MacOp requires "
-                "an input and optional partial sum"
-            )
-
-        if self.stationary_mode == StationaryMode.OUTPUT and len(self.operands) != 2:
-            raise ValueError("output-stationary MacOp requires two multiplicands")
-
+        if len(self.results) != 2:
+            raise ValueError("MacOp requires accumulated and forwarded results")
+        if len(self.operands) not in (1, 2):
+            raise ValueError("MacOp requires a flowing input and optional partial sum")
         if not self.stationary_value.is_scalar:
             raise ValueError("stationary data must identify one scalar")
-        if any(operand.dtype != self.result.dtype for operand in self.operands):
+        if any(operand.dtype != self.accumulated.dtype for operand in self.operands):
             raise TypeError("MacOp operands and result must have the same dtype")
-        if self.stationary_value.dtype != self.result.dtype:
+        if self.stationary_value.dtype != self.accumulated.dtype:
             raise TypeError("MacOp stationary data and result must have the same dtype")
+        if self.forwarded.dtype != self.accumulated.dtype:
+            raise TypeError("MacOp results must have the same dtype")
 
 
 @dataclass(frozen=True)
 class StationaryBinding:
     """Stationary data assigned to the tiles of one template program."""
 
-    mode: StationaryMode
     source: Tensor
     tile_values: tuple[tuple[Tile, TensorAccess], ...]
 
@@ -235,38 +238,44 @@ class TileArrayBuilder:
         self,
         *,
         operands: tuple[TileArrayValue, ...],
-        result_dtype: DType,
+        result_dtypes: tuple[DType, ...],
         tile: Tile,
-        create_operation: Callable[[TileArrayValue], TileArrayOp],
-    ) -> TileArrayValue:
+        create_operation: Callable[[tuple[TileArrayValue, ...]], TileArrayOp],
+    ) -> tuple[TileArrayValue, ...]:
         """Creates and record one tile-array operation."""
         self._ensure_not_built()
         self._bind_tile_array(tile.array)
 
+        if not result_dtypes:
+            raise ValueError("an operation must produce at least one result")
+
         for operand in operands:
             self._validate_operand_for_builder(operand)
 
-        # Commit the value ID only after operation construction and validation
+        # Commits the value ID only after operation construction and validation
         # succeed, so a rejected operation does not consume a value ID.
-        result = TileArrayValue(
-            id=self._next_value_id,
-            dtype=result_dtype,
-            _builder=self,
+        results = tuple(
+            TileArrayValue(id=self._next_value_id + index, dtype=dtype, _builder=self)
+            for index, dtype in enumerate(result_dtypes)
         )
-        operation = create_operation(result)
+
+        operation = create_operation(results)
 
         if not isinstance(operation, TileArrayOp):
             raise TypeError("create_operation must return a TileArrayOp")
-        if operation.result is not result:
-            raise ValueError("create_operation must use the provided result value")
+        if len(operation.results) != len(results) or any(
+            actual is not expected
+            for actual, expected in zip(operation.results, results)
+        ):
+            raise ValueError("create_operation must use the provided result values")
         if operation.operands != operands:
             raise ValueError("create_operation must use the provided operands")
         if operation.tile is not tile:
             raise ValueError("create_operation must use the provided tile")
 
         self._operations.append(operation)
-        self._next_value_id += 1
-        return result
+        self._next_value_id += len(results)
+        return results
 
     def add_input_port(self, *, source: TensorAccess, port: Port) -> TileArrayValue:
         """Creates one scalar kernel input and bind it to a Port."""
@@ -328,23 +337,14 @@ class TileArrayBuilder:
         template_name = None
 
         if mac_operations:
-            stationary_mode = mac_operations[0].stationary_mode
             stationary_source = mac_operations[0].stationary_value.source
 
-            if any(
-                operation.stationary_mode != stationary_mode
-                for operation in mac_operations
-            ):
-                raise ValueError(
-                    "all configured MACs in one template must use one stationary mode"
-                )
             if any(
                 operation.stationary_value.source is not stationary_source
                 for operation in mac_operations
             ):
                 raise ValueError("all configured MACs must use one stationary source")
             stationary = StationaryBinding(
-                mode=stationary_mode,
                 source=stationary_source,
                 tile_values=tuple(
                     (operation.tile, operation.stationary_value)
@@ -413,15 +413,15 @@ def constant(
 
     return builder.emit(
         operands=(),
-        result_dtype=dtype,
+        result_dtypes=(dtype,),
         tile=tile,
-        create_operation=lambda result: ConstantOp(
-            result=result,
+        create_operation=lambda results: ConstantOp(
+            results=results,
             operands=(),
             tile=tile,
             value=value,
         ),
-    )
+    )[0]
 
 
 def add(
@@ -437,14 +437,14 @@ def add(
 
     return builder.emit(
         operands=operands,
-        result_dtype=lhs.dtype,
+        result_dtypes=(lhs.dtype,),
         tile=tile,
-        create_operation=lambda result: AddOp(
-            result=result,
+        create_operation=lambda results: AddOp(
+            results=results,
             operands=operands,
             tile=tile,
         ),
-    )
+    )[0]
 
 
 def input_port(source: TensorAccess, *, port: Port) -> TileArrayValue:
@@ -470,40 +470,30 @@ def output_port(value: TileArrayValue, *, target: TensorAccess, port: Port) -> N
 
 def mac(
     input0: TileArrayValue,
-    input1: TileArrayValue | None,
+    input1: TileArrayValue | None = None,
     *,
     stationary: TensorAccess,
-    mode: StationaryMode,
     tile: Tile,
-) -> TileArrayValue:
-    """Create one configured MAC operation.
-
-    Operand meanings depend on the selected stationary mode:
-
-    - WEIGHT: input0 is activation, input1 is an optional partial sum.
-    - INPUT: input0 is weight, input1 is an optional partial sum.
-    - OUTPUT: input0 and input1 are the two multiplicands.
-    """
+) -> tuple[TileArrayValue, TileArrayValue]:
+    """Creates one configured MAC operation."""
 
     if not isinstance(stationary, TensorAccess):
         raise TypeError("mac stationary data must be a tensor access")
-
-    if not isinstance(mode, StationaryMode):
-        raise TypeError("mac mode must be a StationaryMode")
 
     operands = (input0,) if input1 is None else (input0, input1)
 
     builder = _require_active_builder()
 
-    return builder.emit(
+    accumulated, forwarded = builder.emit(
         operands=operands,
-        result_dtype=input0.dtype,
+        result_dtypes=(input0.dtype, input0.dtype),
         tile=tile,
-        create_operation=lambda result: MacOp(
-            result=result,
+        create_operation=lambda results: MacOp(
+            results=results,
             operands=operands,
             tile=tile,
             stationary_value=stationary,
-            stationary_mode=mode,
         ),
     )
+
+    return accumulated, forwarded
