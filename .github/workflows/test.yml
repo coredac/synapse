@@ -24,28 +24,7 @@ env:
   CCACHE_MAXSIZE: 4G
 
 jobs:
-  python-unit-tests:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: 3.11.13
-
-      - name: Install Synapse and test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
-          python -m pip install pytest
-
-      - name: Run frontend and language tests
-        run: python -m pytest -q tests/python/frontend tests/python/language
-
-  compiler-integration:
+  tests:
     runs-on: ubuntu-22.04
     timeout-minutes: 240
 
@@ -173,8 +152,8 @@ jobs:
           test -x build/amoeba/tools/mlir-amoeba-opt/mlir-amoeba-opt
           test -d build/amoeba/python_packages/amoeba_core/taskflow_mlir
 
-      - name: Run compiler integration tests
-        run: python -m pytest -q tests/python/compiler
+      - name: Run all tests
+        run: python -m pytest -q tests
 
       - name: Save ccache
         if: steps.ccache.outputs.cache-hit != 'true'
