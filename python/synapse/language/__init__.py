@@ -5,9 +5,9 @@ from .tensor import Tensor
 from .tile_array_program import (
     add,
     constant,
-    input_port,
+    load,
     mac,
-    output_port,
+    store,
 )
 from .types import DType, TensorType, f32, i32
 
@@ -20,7 +20,7 @@ __all__ = [
     "constant",
     "f32",
     "i32",
-    "input_port",
+    "load",
     "mac",
-    "output_port",
+    "store",
 ]

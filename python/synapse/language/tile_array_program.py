@@ -11,7 +11,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from .spatial import Port, Tile, TileArray
+from .spatial import Tile, TileArray
 from .tensor import Tensor, TensorAccess
 from .types import DType
 
@@ -23,24 +23,6 @@ class TileArrayValue:
     id: int
     dtype: DType
     _builder: TileArrayBuilder = field(repr=False)
-
-
-@dataclass(frozen=True)
-class InputPortBinding:
-    """A tensor slice bound to one TileArray input Port."""
-
-    input_des: TileArrayValue
-    input_src: TensorAccess
-    port: Port
-
-
-@dataclass(frozen=True)
-class OutputPortBinding:
-    """A TileArray value bound to a tensor output slice and Port."""
-
-    output_src: TileArrayValue
-    output_des: TensorAccess
-    port: Port
 
 
 # ---------------------------------------------------------------
@@ -57,6 +39,60 @@ class TileArrayOp:
     results: tuple[TileArrayValue, ...]
     operands: tuple[TileArrayValue, ...]
     tile: Tile
+
+
+@dataclass(frozen=True)
+class LoadOp(TileArrayOp):
+    """Loads through an explicit address or a configured tensor access."""
+
+    source: TensorAccess | None = None
+
+    def __post_init__(self) -> None:
+        """Validates the selected address form and result type."""
+        if len(self.results) != 1:
+            raise ValueError("LoadOp requires exactly one result")
+        if self.source is None:
+            if len(self.operands) != 1:
+                raise ValueError("dynamic LoadOp requires one address operand")
+            if self.operands[0].dtype != DType.I32:
+                raise TypeError("dynamic addresses currently require i32")
+        else:
+            if self.operands:
+                raise ValueError("configured LoadOp has no address operand")
+            if self.results[0].dtype != self.source.dtype:
+                raise TypeError("LoadOp result type must match its source")
+
+    @property
+    def addr(self) -> TileArrayValue | None:
+        """Returns the explicit address when the load is dynamic."""
+        return self.operands[0] if self.operands else None
+
+
+@dataclass(frozen=True)
+class StoreOp(TileArrayOp):
+    """Stores through an explicit address or a configured tensor access."""
+
+    target: TensorAccess | None = None
+
+    def __post_init__(self) -> None:
+        """Validates the value and selected address form."""
+        if self.results:
+            raise ValueError("StoreOp produces no results")
+        if self.target is None:
+            if len(self.operands) != 2:
+                raise ValueError("dynamic StoreOp requires value and address operands")
+            if self.operands[1].dtype != DType.I32:
+                raise TypeError("dynamic addresses currently require i32")
+        else:
+            if len(self.operands) != 1:
+                raise ValueError("configured StoreOp requires one value operand")
+            if self.operands[0].dtype != self.target.dtype:
+                raise TypeError("StoreOp value type must match its target")
+
+    @property
+    def addr(self) -> TileArrayValue | None:
+        """Returns the explicit address when the store is dynamic."""
+        return self.operands[1] if len(self.operands) == 2 else None
 
 
 @dataclass(frozen=True)
@@ -163,10 +199,7 @@ class TileArrayProgram:
 
     array: TileArray
     arguments: tuple[Tensor, ...]
-    input_ports: tuple[InputPortBinding, ...]
-    output_ports: tuple[OutputPortBinding, ...]
     operations: tuple[TileArrayOp, ...]
-    template_name: str | None
     stationary: StationaryBinding | None
 
 
@@ -183,8 +216,6 @@ class TileArrayBuilder:
     def __init__(self, arguments: tuple[Tensor, ...] = ()):
         self._arguments = arguments
         self._array: TileArray | None = None
-        self._input_ports: list[InputPortBinding] = []
-        self._output_ports: list[OutputPortBinding] = []
         self._operations: list[TileArrayOp] = []
         self._next_value_id = 0
         self._token = None
@@ -242,12 +273,9 @@ class TileArrayBuilder:
         tile: Tile,
         create_operation: Callable[[tuple[TileArrayValue, ...]], TileArrayOp],
     ) -> tuple[TileArrayValue, ...]:
-        """Creates and record one tile-array operation."""
+        """Creates and records one tile-array operation."""
         self._ensure_not_built()
         self._bind_tile_array(tile.array)
-
-        if not result_dtypes:
-            raise ValueError("an operation must produce at least one result")
 
         for operand in operands:
             self._validate_operand_for_builder(operand)
@@ -277,49 +305,8 @@ class TileArrayBuilder:
         self._next_value_id += len(results)
         return results
 
-    def add_input_port(self, *, source: TensorAccess, port: Port) -> TileArrayValue:
-        """Creates one scalar kernel input and bind it to a Port."""
-        self._ensure_not_built()
-        if source.is_scalar:
-            raise ValueError("an input Port requires a tensor slice")
-
-        if sum(isinstance(index, slice) for index in source.indices) != 1:
-            raise ValueError("an input Port currently supports one varying dimension")
-
-        self._bind_tile_array(port.array)
-
-        result = TileArrayValue(
-            id=self._next_value_id, dtype=source.dtype, _builder=self
-        )
-        self._next_value_id += 1
-        self._input_ports.append(
-            InputPortBinding(input_src=source, input_des=result, port=port)
-        )
-        return result
-
-    def add_output_port(
-        self, *, value: TileArrayValue, target: TensorAccess, port: Port
-    ) -> None:
-        """Bind one kernel result to an output slice and Port."""
-        self._ensure_not_built()
-        self._validate_operand_for_builder(value)
-
-        if target.is_scalar:
-            raise ValueError("an output Port requires a tensor slice")
-        if sum(isinstance(index, slice) for index in target.indices) != 1:
-            raise ValueError("an output Port currently supports one varying dimension")
-
-        if target.dtype != value.dtype:
-            raise TypeError("output value and target must have the same dtype")
-
-        self._bind_tile_array(port.array)
-
-        self._output_ports.append(
-            OutputPortBinding(output_src=value, output_des=target, port=port)
-        )
-
     def build(self) -> TileArrayProgram:
-        """Finish recording and return a program."""
+        """Finishes recording and returns a program."""
         if self._token is not None:
             raise RuntimeError(
                 "cannot build a TileArrayProgram while its builder is active"
@@ -334,7 +321,6 @@ class TileArrayBuilder:
         ]
 
         stationary = None
-        template_name = None
 
         if mac_operations:
             stationary_source = mac_operations[0].stationary_value.source
@@ -351,18 +337,12 @@ class TileArrayBuilder:
                     for operation in mac_operations
                 ),
             )
-            # Configured MAC networks currently use the systolic template.
-            # Template registration will replace this inference later.
-            template_name = "systolic_array"
 
         self._is_built = True
         return TileArrayProgram(
             array=self._array,
             arguments=self._arguments,
-            input_ports=tuple(self._input_ports),
-            output_ports=tuple(self._output_ports),
             operations=tuple(self._operations),
-            template_name=template_name,
             stationary=stationary,
         )
 
@@ -376,7 +356,7 @@ _active_builder: ContextVar[TileArrayBuilder | None] = ContextVar(
 
 
 def _require_active_builder() -> TileArrayBuilder:
-    """Return the active builder."""
+    """Returns the active builder."""
     builder = _active_builder.get()
 
     if builder is None:
@@ -393,10 +373,10 @@ def _require_active_builder() -> TileArrayBuilder:
 def constant(
     value: int | float, *, tile: Tile, dtype: DType | None = None
 ) -> TileArrayValue:
-    """Create a scalar constant on one hardware tile.
+    """Creates a scalar constant on one hardware tile.
 
     Integer literals default to i32. Floating-point literals default to f32.
-    Use an explicit dtype when a different representation is required:
+    An explicit dtype selects a different representation:
         constant(1.0, tile=tile, dtype=DType.F32)
     """
     if dtype is None:
@@ -430,7 +410,7 @@ def add(
     *,
     tile: Tile,
 ) -> TileArrayValue:
-    """Create a scalar addition on one hardware tile."""
+    """Creates a scalar addition on one hardware tile."""
 
     builder = _require_active_builder()
     operands = (lhs, rhs)
@@ -447,25 +427,68 @@ def add(
     )[0]
 
 
-def input_port(source: TensorAccess, *, port: Port) -> TileArrayValue:
-    """Reads one tensor slice through a TileArray input port."""
-    if not isinstance(source, TensorAccess):
-        raise TypeError("input_port source must be a tensor access")
-    if not isinstance(port, Port):
-        raise TypeError("input_port port must be a Port")
-    return _require_active_builder().add_input_port(source=source, port=port)
+def load(
+    source: TensorAccess | None = None,
+    *,
+    addr: TileArrayValue | None = None,
+    dtype: DType | None = None,
+    tile: Tile,
+) -> TileArrayValue:
+    """Loads from a tensor access or an explicit target address.
+
+    Configured accesses enumerate logical indices in lexicographic order,
+    with the last varying dimension advancing fastest. Dynamic addresses
+    already use the target address representation; they are not tensor indices.
+    """
+    if (source is None) == (addr is None):
+        raise ValueError("load requires exactly one of source and addr")
+    if source is not None:
+        if not isinstance(source, TensorAccess):
+            raise TypeError("load source must be a TensorAccess")
+        if dtype is not None and dtype != source.dtype:
+            raise TypeError("load dtype must match its source")
+        dtype = source.dtype
+    if not isinstance(dtype, DType):
+        raise TypeError("dynamic load requires an explicit DType")
+
+    operands = () if addr is None else (addr,)
+    return _require_active_builder().emit(
+        operands=operands,
+        result_dtypes=(dtype,),
+        tile=tile,
+        create_operation=lambda results: LoadOp(
+            results=results,
+            operands=operands,
+            tile=tile,
+            source=source,
+        ),
+    )[0]
 
 
-def output_port(value: TileArrayValue, *, target: TensorAccess, port: Port) -> None:
-    """Write one TileArray value stream through an output Port."""
-
-    if not isinstance(target, TensorAccess):
-        raise TypeError("output_port target must be a tensor access")
-
-    if not isinstance(port, Port):
-        raise TypeError("output_port port must be a Port")
-
-    _require_active_builder().add_output_port(value=value, target=target, port=port)
+def store(
+    value: TileArrayValue,
+    *,
+    target: TensorAccess | None = None,
+    addr: TileArrayValue | None = None,
+    tile: Tile,
+) -> None:
+    """Stores a value through a tensor access or explicit target address."""
+    if (target is None) == (addr is None):
+        raise ValueError("store requires exactly one of target and addr")
+    if target is not None and not isinstance(target, TensorAccess):
+        raise TypeError("store target must be a TensorAccess")
+    operands = (value,) if addr is None else (value, addr)
+    _require_active_builder().emit(
+        operands=operands,
+        result_dtypes=(),
+        tile=tile,
+        create_operation=lambda results: StoreOp(
+            results=results,
+            operands=operands,
+            tile=tile,
+            target=target,
+        ),
+    )
 
 
 def mac(

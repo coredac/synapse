@@ -10,6 +10,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+docs/
 .eggs/
 
 # Test / type-check / coverage caches

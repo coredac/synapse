@@ -19,7 +19,7 @@ class Tensor:
     def __getitem__(
         self, indices: TensorIndex | tuple[TensorIndex, ...]
     ) -> TensorAccess:
-        """Describes a scalar element or full-dimensional slice of this tensor."""
+        """Describes a scalar element or static slice of this tensor."""
         if not isinstance(indices, tuple):
             indices = (indices,)
 
@@ -37,11 +37,16 @@ class Tensor:
                 continue
 
             if isinstance(index, slice):
-                if index != slice(None):
-                    raise ValueError("only full slices are supported initially")
+                if any(
+                    value is not None and type(value) is not int
+                    for value in (index.start, index.stop, index.step)
+                ):
+                    raise TypeError("slice bounds and steps must be integers")
+                if index.step == 0:
+                    raise ValueError("slice step cannot be zero")
                 continue
 
-            raise TypeError("indices must be integers or full slices")
+            raise TypeError("indices must be integers or static slices")
 
         return TensorAccess(source=self, indices=indices)
 

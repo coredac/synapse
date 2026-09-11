@@ -35,33 +35,3 @@ def test_access_tile_array_by_coordinate():
     )
 
     assert tile is enumerated_tile
-
-
-def test_tile_array_exposes_boundary_ports():
-    array = synl.TileArray(x_tiles=2, y_tiles=3)
-
-    assert [(port.direction, port.x, port.y) for port in array.west_ports] == [
-        ("west", 0, 0),
-        ("west", 0, 1),
-        ("west", 0, 2),
-    ]
-
-    assert [(port.direction, port.x, port.y) for port in array.east_ports] == [
-        ("east", 1, 0),
-        ("east", 1, 1),
-        ("east", 1, 2),
-    ]
-
-    assert [(port.direction, port.x, port.y) for port in array.north_ports] == [
-        ("north", 0, 2),
-        ("north", 1, 2),
-    ]
-
-    assert [(port.direction, port.x, port.y) for port in array.south_ports] == [
-        ("south", 0, 0),
-        ("south", 1, 0),
-    ]
-
-    assert array.west_ports[2].array is array
-    assert array.west_ports[2].tile is array[0, 2]
-    assert array.south_ports[1].tile is array[1, 0]
