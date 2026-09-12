@@ -15,7 +15,7 @@ def test_tile_array_is_parameterized():
 def test_tile_array_exposes_tiles():
     array = synl.TileArray(x_tiles=2, y_tiles=3)
 
-    coordinates = {(tile.x, tile.y) for tile in array.tiles()}
+    coordinates = {(tile.x, tile.y) for tile in array.tiles}
 
     assert coordinates == {(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)}
 
@@ -31,9 +31,7 @@ def test_access_tile_array_by_coordinate():
     assert tile is array[1, 2]
 
     enumerated_tile = next(
-        candidate
-        for candidate in array.tiles()
-        if candidate.x == 1 and candidate.y == 2
+        candidate for candidate in array.tiles if candidate.x == 1 and candidate.y == 2
     )
 
     assert tile is enumerated_tile
