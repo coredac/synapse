@@ -6,22 +6,24 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from synapse.frontend.lowering import lower
+from synapse.language.types import TensorType
 
 
-def compile(program: Callable, *, target: str) -> str:
-    """Compile a Synapse program for the selected backend."""
-
-    # We only support the Neura backend for now, so we raise an error if the user tries to compile for any other target.
+def compile(
+    program: Callable,
+    *,
+    target: str,
+    argument_types: tuple[TensorType, ...] = (),
+) -> str:
+    """Compiles a TileArray function for the Neura backend."""
     if target != "neura":
         raise ValueError(f"unsupported compilation target: {target}")
-    # TODO: Support the amoeba backend.
-
-    neura_ir = lower(program)
+    neura_ir = lower(program, argument_types=argument_types)
     return _run_neura_backend(neura_ir)
 
 
 def _run_neura_backend(neura_ir: str) -> str:
-    """Legalize Neura values, insert data movement, and run template mapping."""
+    """Legalizes values, inserts data movement, and runs template mapping."""
 
     repository_root = Path(__file__).resolve().parents[3]
     amoeba_opt = (
@@ -36,11 +38,24 @@ def _run_neura_backend(neura_ir: str) -> str:
     if not amoeba_opt.is_file():
         raise FileNotFoundError(f"Amoeba compiler is not built: {amoeba_opt}")
 
+    architecture_spec = (
+        repository_root
+        / "mlir"
+        / "amoeba"
+        / "thirdparty"
+        / "neura"
+        / "test"
+        / "arch_spec"
+        / "architecture.yaml"
+    )
+
     with TemporaryDirectory(prefix="synapse-") as temporary_directory:
         output_path = Path(temporary_directory) / "mapped.mlir"
 
         command = [
             str(amoeba_opt),
+            f"--neura-architecture-spec={architecture_spec}",
+            "--promote-input-arg-to-const",
             "--leverage-predicated-value",
             "--insert-data-mov",
             (
@@ -58,6 +73,7 @@ def _run_neura_backend(neura_ir: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            cwd=temporary_directory,
         )
 
         if completed.returncode != 0:
