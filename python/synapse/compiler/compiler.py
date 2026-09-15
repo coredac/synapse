@@ -43,9 +43,14 @@ def replace(
     from taskflow_mlir.ir import Context, Location, Module
 
     from synapse.compiler.pattern_replacement import apply_patterns
+    from synapse.patterns.gemm_pattern import (
+        AffineGemmPattern,
+        LinalgGemmPattern,
+        LinalgGenericGemmPattern,
+    )
 
     if patterns is None:
-        patterns = []
+        patterns = [LinalgGemmPattern, LinalgGenericGemmPattern, AffineGemmPattern]
     with Context(), Location.unknown():
         taskflow.register_dialect()
         neura.register_dialect()
