@@ -1,5 +1,7 @@
 # Local docs / planning artifacts
 planbook/
+docs/
+pupa/
 
 # Python bytecode and caches
 __pycache__/
