@@ -1,5 +1,7 @@
 # Local docs / planning artifacts
 planbook/
+docs/
+pupa/
 
 # Python bytecode and caches
 __pycache__/
@@ -10,6 +12,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+docs/
 .eggs/
 
 # Test / type-check / coverage caches
