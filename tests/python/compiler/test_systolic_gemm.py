@@ -11,6 +11,51 @@ from synapse.library import ws_gemm_3x3
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 NEURA_ROOT = REPOSITORY_ROOT / "mlir/amoeba/thirdparty/neura"
 
+
+def test_lowers_systolic_gemm_to_exact_pre_mapping_ir():
+    actual = lowering.lower(ws_gemm_3x3, argument_types=(synl.i32[3, 3],) * 3)
+    assert actual.strip() == PRE_MAPPING_IR
+
+
+def test_compiles_systolic_gemm_to_exact_mapped_ir():
+    actual = synapse.compile(
+        ws_gemm_3x3, target="neura", argument_types=(synl.i32[3, 3],) * 3
+    )
+    assert actual.strip() == MAPPED_IR
+
+
+def test_generates_configured_memory_and_mac_instructions(tmp_path):
+    mapped = synapse.compile(
+        ws_gemm_3x3, target="neura", argument_types=(synl.i32[3, 3],) * 3
+    )
+    command = [
+        str(REPOSITORY_ROOT / "build/amoeba/tools/mlir-amoeba-opt/mlir-amoeba-opt"),
+        f"--neura-architecture-spec={NEURA_ROOT / 'test/arch_spec/architecture.yaml'}",
+        "--generate-code",
+        "-o",
+        str(tmp_path / "mapped.mlir"),
+    ]
+    completed = subprocess.run(
+        command, input=mapped, text=True, capture_output=True, cwd=tmp_path
+    )
+    assert completed.returncode == 0, completed.stderr
+    assembly = (tmp_path / "tmp-generated-instructions.asm").read_text()
+    assert assembly.count("  LOAD,") == 3
+    assert assembly.count("  STORE,") == 3
+    assert assembly.count("  MUL_ADD,") == 6
+    assert assembly.count("  MUL,") == 3
+    assert "address(arg0, 0, 3, 6)" in assembly
+    assert "address(arg2, 2, 5, 8)" in assembly
+    assert "value(arg1, 8)" in assembly
+
+    invalid = mapped.replace("array<i64: 0, 3, 6>", "array<i64: 0, 3, 9>")
+    completed = subprocess.run(
+        command, input=invalid, text=True, capture_output=True, cwd=tmp_path
+    )
+    assert completed.returncode != 0
+    assert "constant element offset is out of bounds" in completed.stderr
+
+
 PRE_MAPPING_IR = """
 #map = affine_map<(d0, d1) -> (-d1 + 3, d0 - 1)>
 module {
@@ -93,47 +138,3 @@ module {
   }
 }
 """.strip()
-
-
-def test_lowers_systolic_gemm_to_exact_pre_mapping_ir():
-    actual = lowering.lower(ws_gemm_3x3, argument_types=(synl.i32[3, 3],) * 3)
-    assert actual.strip() == PRE_MAPPING_IR
-
-
-def test_compiles_systolic_gemm_to_exact_mapped_ir():
-    actual = synapse.compile(
-        ws_gemm_3x3, target="neura", argument_types=(synl.i32[3, 3],) * 3
-    )
-    assert actual.strip() == MAPPED_IR
-
-
-def test_generates_configured_memory_and_mac_instructions(tmp_path):
-    mapped = synapse.compile(
-        ws_gemm_3x3, target="neura", argument_types=(synl.i32[3, 3],) * 3
-    )
-    command = [
-        str(REPOSITORY_ROOT / "build/amoeba/tools/mlir-amoeba-opt/mlir-amoeba-opt"),
-        f"--neura-architecture-spec={NEURA_ROOT / 'test/arch_spec/architecture.yaml'}",
-        "--generate-code",
-        "-o",
-        str(tmp_path / "mapped.mlir"),
-    ]
-    completed = subprocess.run(
-        command, input=mapped, text=True, capture_output=True, cwd=tmp_path
-    )
-    assert completed.returncode == 0, completed.stderr
-    assembly = (tmp_path / "tmp-generated-instructions.asm").read_text()
-    assert assembly.count("  LOAD,") == 3
-    assert assembly.count("  STORE,") == 3
-    assert assembly.count("  MUL_ADD,") == 6
-    assert assembly.count("  MUL,") == 3
-    assert "address(arg0, 0, 3, 6)" in assembly
-    assert "address(arg2, 2, 5, 8)" in assembly
-    assert "value(arg1, 8)" in assembly
-
-    invalid = mapped.replace("array<i64: 0, 3, 6>", "array<i64: 0, 3, 9>")
-    completed = subprocess.run(
-        command, input=invalid, text=True, capture_output=True, cwd=tmp_path
-    )
-    assert completed.returncode != 0
-    assert "constant element offset is out of bounds" in completed.stderr
