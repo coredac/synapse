@@ -41,21 +41,12 @@ class TileArray:
         self.x_tiles = x_tiles
         self.y_tiles = y_tiles
 
-        self._tiles = [
-            [Tile(x=x, y=y, array=self) for x in range(x_tiles)] for y in range(y_tiles)
-        ]
-
-    def tiles(self):
-        """Iterate over all tiles in the array.
-
-        The iteration order is a Python programming convenience and
-        does not specify sequential hardware execution.
-        """
-        for y_row in self._tiles:
-            yield from y_row
+        self.tiles = tuple(
+            Tile(x=x, y=y, array=self) for y in range(y_tiles) for x in range(x_tiles)
+        )
 
     def __getitem__(self, coordinate: tuple[int, int]) -> Tile:
-        """Return the tile at the given ``(x, y)`` coordinate."""
+        """Returns the tile at the given ``(x, y)`` coordinate."""
 
         x, y = coordinate
 
@@ -65,4 +56,4 @@ class TileArray:
                 f"TileArray({self.x_tiles}, {self.y_tiles})"
             )
 
-        return self._tiles[y][x]
+        return self.tiles[y * self.x_tiles + x]
