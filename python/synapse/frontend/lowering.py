@@ -38,7 +38,7 @@ def build_tile_array_program(
 ) -> TileArrayProgram:
     """Runs a TileArray function and records its operations and tensor accesses.
 
-    Direct compilation and pattern rewriting share this construction step.
+    Direct compilation and pattern replacement share this construction step.
     It creates a TileArrayProgram without importing or constructing MLIR.
     """
     # Program arguments currently carry tensor types. Scalar argument capture
