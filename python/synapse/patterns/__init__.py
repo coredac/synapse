@@ -1,5 +1,5 @@
-"""User-defined rewrite patterns for Synapse programs."""
+"""User-defined replacement patterns for Synapse programs."""
 
-from .pattern import TileArrayRewritePattern
+from .pattern import TileArrayProgramPattern
 
-__all__ = ["TileArrayRewritePattern"]
+__all__ = ["TileArrayProgramPattern"]

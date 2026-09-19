@@ -1,3 +1,3 @@
-from .compiler import compile, rewrite
+from .compiler import compile, replace
 
-__all__ = ["compile", "rewrite"]
+__all__ = ["compile", "replace"]

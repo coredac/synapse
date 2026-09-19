@@ -1,4 +1,4 @@
-"""Public API for Synapse rewrite patterns."""
+"""Public API for Synapse replacement patterns."""
 
 from __future__ import annotations
 
@@ -8,21 +8,21 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from taskflow_mlir.ir import OpView
 
-    from synapse.compiler.pattern_rewriter import PatternRewriter
+    from synapse.compiler.pattern_replacement import PatternReplacer
 
 
-class TileArrayRewritePattern(ABC):
-    """Matches source IR and rewrites it into a TileArray implementation."""
+class TileArrayProgramPattern(ABC):
+    """Matches source IR and replaces it with a TileArray program."""
 
     root: ClassVar[type[OpView] | tuple[type[OpView], ...]]
 
     @classmethod
     @abstractmethod
-    def match_and_rewrite(
+    def match_and_replace(
         cls,
         operation: OpView,
-        rewriter: PatternRewriter,
+        replacer: PatternReplacer,
     ) -> bool:
-        """Matches one root operation and rewrites it when supported."""
+        """Matches one root operation and replaces it when supported."""
 
         raise NotImplementedError

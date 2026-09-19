@@ -1,4 +1,4 @@
-"""Applies user-defined rewrite patterns to MLIR modules."""
+"""Applies user-defined replacement patterns to MLIR modules."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ from taskflow_mlir.ir import (
 )
 
 from synapse.language.types import DType, TensorType
-from synapse.patterns import TileArrayRewritePattern
+from synapse.patterns import TileArrayProgramPattern
 
 
-class PatternRewriter:
+class PatternReplacer:
     """Mutates IR on behalf of one successfully matched pattern."""
 
     def __init__(self, root: OpView):
@@ -65,7 +65,7 @@ class PatternRewriter:
 
         operation.erase()
 
-    def replace_with_tile_array(
+    def replace_with_tile_array_program(
         self,
         operation: OpView,
         *,
@@ -119,7 +119,7 @@ class PatternRewriter:
 
 def apply_patterns(
     module: Module,
-    patterns: Sequence[type[TileArrayRewritePattern]],
+    patterns: Sequence[type[TileArrayProgramPattern]],
 ) -> int:
     """Walks a module and applies the first matching pattern at each operation."""
 
@@ -131,7 +131,7 @@ def apply_patterns(
 
 def _apply_patterns(
     operation: OpView,
-    patterns: Sequence[type[TileArrayRewritePattern]],
+    patterns: Sequence[type[TileArrayProgramPattern]],
 ) -> int:
     """Applies patterns recursively, stopping below a replaced operation."""
 
@@ -139,22 +139,22 @@ def _apply_patterns(
         if not isinstance(operation, pattern.root):
             continue
 
-        rewriter = PatternRewriter(operation)
+        replacer = PatternReplacer(operation)
 
-        if pattern.match_and_rewrite(operation, rewriter):
+        if pattern.match_and_replace(operation, replacer):
             return 1
 
-    rewrite_count = 0
+    replace_count = 0
 
     for region in operation.regions:
         for block in region.blocks:
             for nested_operation in tuple(block.operations):
-                rewrite_count += _apply_patterns(
+                replace_count += _apply_patterns(
                     nested_operation,
                     patterns,
                 )
 
-    return rewrite_count
+    return replace_count
 
 
 def _base_buffer(value):

@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from synapse.frontend.lowering import lower
 from synapse.language.types import TensorType
-from synapse.patterns import TileArrayRewritePattern
+from synapse.patterns import TileArrayProgramPattern
 
 
 def compile(
@@ -15,7 +15,7 @@ def compile(
     *,
     target: str,
     argument_types: tuple[TensorType, ...] = (),
-    patterns: Sequence[type[TileArrayRewritePattern]] | None = None,
+    patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
 ) -> str:
     """Compiles a TileArray function or bufferized task IR for the backend."""
 
@@ -25,24 +25,25 @@ def compile(
     if isinstance(program, str):
         if argument_types:
             raise ValueError("IR inputs already carry their argument types")
-        neura_ir = rewrite(program, patterns=patterns)
+        neura_ir = replace(program, patterns=patterns)
     else:
         if patterns is not None:
-            raise ValueError("rewrite patterns apply to IR inputs")
+            raise ValueError("replacement patterns apply to IR inputs")
         neura_ir = lower(program, argument_types=argument_types)
     return _run_neura_backend(neura_ir)
 
 
-def rewrite(
+def replace(
     source: str,
     *,
-    patterns: Sequence[type[TileArrayRewritePattern]] | None = None,
+    patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
 ) -> str:
     """Applies patterns to task IR while preserving unmatched computations."""
     from taskflow_mlir.dialects import neura, taskflow
     from taskflow_mlir.ir import Context, Location, Module
 
-    from synapse.compiler.pattern_rewriter import apply_patterns
+    from synapse.compiler.pattern_replacement import apply_patterns
+
     if patterns is None:
         patterns = []
     with Context(), Location.unknown():
@@ -51,7 +52,7 @@ def rewrite(
         module = Module.parse(source)
         apply_patterns(module, patterns)
         if not module.operation.verify():
-            raise ValueError("rewritten module failed verification")
+            raise ValueError("replaced module failed verification")
         return str(module)
 
 
