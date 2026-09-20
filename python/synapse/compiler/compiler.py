@@ -1,25 +1,59 @@
 """Top-Level Synapse Compilation Flow."""
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from synapse.frontend.lowering import lower
 from synapse.language.types import TensorType
+from synapse.patterns import TileArrayProgramPattern
 
 
 def compile(
-    program: Callable,
+    program: Callable | str,
     *,
     target: str,
     argument_types: tuple[TensorType, ...] = (),
+    patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
 ) -> str:
-    """Compiles a TileArray function for the Neura backend."""
+    """Compiles a TileArray function or bufferized task IR for the backend."""
+
+    # The current compilation path targets Neura.
     if target != "neura":
         raise ValueError(f"unsupported compilation target: {target}")
-    neura_ir = lower(program, argument_types=argument_types)
+    if isinstance(program, str):
+        if argument_types:
+            raise ValueError("IR inputs already carry their argument types")
+        neura_ir = replace(program, patterns=patterns)
+    else:
+        if patterns is not None:
+            raise ValueError("replacement patterns apply to IR inputs")
+        neura_ir = lower(program, argument_types=argument_types)
     return _run_neura_backend(neura_ir)
+
+
+def replace(
+    source: str,
+    *,
+    patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
+) -> str:
+    """Applies patterns to task IR while preserving unmatched computations."""
+    from taskflow_mlir.dialects import neura, taskflow
+    from taskflow_mlir.ir import Context, Location, Module
+
+    from synapse.compiler.pattern_replacement import apply_patterns
+
+    if patterns is None:
+        patterns = []
+    with Context(), Location.unknown():
+        taskflow.register_dialect()
+        neura.register_dialect()
+        module = Module.parse(source)
+        apply_patterns(module, patterns)
+        if not module.operation.verify():
+            raise ValueError("replaced module failed verification")
+        return str(module)
 
 
 def _run_neura_backend(neura_ir: str) -> str:
