@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from synapse.frontend.lowering import lower
-from synapse.language.types import TensorType
+from synapse.language.types import BufferType
 from synapse.patterns import TileArrayProgramPattern
 
 
@@ -14,7 +14,7 @@ def compile(
     program: Callable | str,
     *,
     target: str,
-    argument_types: tuple[TensorType, ...] = (),
+    argument_types: tuple[BufferType, ...] = (),
     patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
 ) -> str:
     """Compiles a TileArray function or bufferized task IR for the backend."""

@@ -1,7 +1,6 @@
 """Public Synapse language API."""
 
 from .spatial import TileArray
-from .tensor import Tensor
 from .tile_array_program import (
     add,
     constant,
@@ -9,12 +8,20 @@ from .tile_array_program import (
     mac,
     store,
 )
-from .types import DType, TensorType, f32, i32
+from .types import (
+    BufferType,
+    DType,
+    f32,
+    i32,
+)
+from .values import Buffer, BufferSlice, SynapseValue
 
 __all__ = [
+    "Buffer",
+    "BufferSlice",
+    "BufferType",
     "DType",
-    "Tensor",
-    "TensorType",
+    "SynapseValue",
     "TileArray",
     "add",
     "constant",

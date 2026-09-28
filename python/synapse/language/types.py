@@ -11,19 +11,23 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class DType(Enum):
+class SynapseType:
+    """Base class for types in the Synapse language."""
+
+
+class DType(SynapseType, Enum):
     """A data type supported by Synapse."""
 
     I32 = "i32"
     F32 = "f32"
 
-    def __getitem__(self, shape: int | tuple[int, ...]) -> TensorType:
-        """Create a tensor type with this data element type."""
+    def __getitem__(self, shape: int | tuple[int, ...]) -> BufferType:
+        """Create a buffer type with this data element type."""
 
         if not isinstance(shape, tuple):
             shape = (shape,)
 
-        return TensorType(shape=shape, dtype=self)
+        return BufferType(shape=shape, dtype=self)
 
     def __str__(self) -> str:
         """Return the source-level spelling of this type."""
@@ -32,11 +36,8 @@ class DType(Enum):
 
 
 @dataclass(frozen=True)
-class TensorType:
-    """The shape and scalar element type of a Synapse tensor.
-
-    TensorType does not prescribe its later bufferized representation.
-    """
+class BufferType(SynapseType):
+    """The shape and element type of a buffer."""
 
     shape: tuple[int, ...]
     dtype: DType
@@ -45,12 +46,12 @@ class TensorType:
         """Validates the dimensions and element type."""
 
         if not self.shape:
-            raise TypeError("a tensor type requires at least one dimension")
+            raise TypeError("a buffer type requires at least one dimension")
 
         if not all(
             type(dimension) is int and dimension > 0 for dimension in self.shape
         ):
-            raise TypeError("tensor dimensions must be positive integers")
+            raise TypeError("buffer dimensions must be positive integers")
 
         if not isinstance(self.dtype, DType):
             raise TypeError("dtype must be a DType")
