@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from .spatial import Tile, TileArray
-from .tensor import Tensor, TensorAccess
+from .values import Buffer, BufferSlice
 from .types import DType
 
 
@@ -43,9 +43,9 @@ class TileArrayOp:
 
 @dataclass(frozen=True)
 class LoadOp(TileArrayOp):
-    """Loads through an explicit address or a configured tensor access."""
+    """Loads through an explicit address or a configured buffer slice."""
 
-    source: TensorAccess | None = None
+    source: BufferSlice | None = None
 
     def __post_init__(self) -> None:
         """Validates the selected address form and result type."""
@@ -70,9 +70,9 @@ class LoadOp(TileArrayOp):
 
 @dataclass(frozen=True)
 class StoreOp(TileArrayOp):
-    """Stores through an explicit address or a configured tensor access."""
+    """Stores through an explicit address or a configured buffer slice."""
 
-    target: TensorAccess | None = None
+    target: BufferSlice | None = None
 
     def __post_init__(self) -> None:
         """Validates the value and selected address form."""
@@ -154,7 +154,7 @@ class AddOp(TileArrayOp):
 class MacOp(TileArrayOp):
     """A configured MAC using one stationary scalar value."""
 
-    stationary_value: TensorAccess
+    stationary_value: BufferSlice
 
     @property
     def accumulated(self) -> TileArrayValue:
@@ -189,8 +189,8 @@ class MacOp(TileArrayOp):
 class StationaryBinding:
     """Stationary data assigned to the tiles of one template program."""
 
-    source: Tensor
-    tile_values: tuple[tuple[Tile, TensorAccess], ...]
+    source: Buffer
+    tile_values: tuple[tuple[Tile, BufferSlice], ...]
 
 
 @dataclass(frozen=True)
@@ -198,7 +198,7 @@ class TileArrayProgram:
     """A tile-array program produced by TileArrayBuilder."""
 
     array: TileArray
-    arguments: tuple[Tensor, ...]
+    arguments: tuple[Buffer, ...]
     operations: tuple[TileArrayOp, ...]
     stationary: StationaryBinding | None
 
@@ -213,7 +213,7 @@ class TileArrayBuilder:
     is called, it returns a TileArrayProgram.
     """
 
-    def __init__(self, arguments: tuple[Tensor, ...] = ()):
+    def __init__(self, arguments: tuple[Buffer, ...] = ()):
         self._arguments = arguments
         self._array: TileArray | None = None
         self._operations: list[TileArrayOp] = []
@@ -428,23 +428,23 @@ def add(
 
 
 def load(
-    source: TensorAccess | None = None,
+    source: BufferSlice | None = None,
     *,
     addr: TileArrayValue | None = None,
     dtype: DType | None = None,
     tile: Tile,
 ) -> TileArrayValue:
-    """Loads from a tensor access or an explicit target address.
+    """Loads from a buffer slice or an explicit target address.
 
     Configured accesses enumerate logical indices in lexicographic order,
     with the last varying dimension advancing fastest. Dynamic addresses
-    already use the target address representation; they are not tensor indices.
+    already use the target address representation; they are not buffer indices.
     """
     if (source is None) == (addr is None):
         raise ValueError("load requires exactly one of source and addr")
     if source is not None:
-        if not isinstance(source, TensorAccess):
-            raise TypeError("load source must be a TensorAccess")
+        if not isinstance(source, BufferSlice):
+            raise TypeError("load source must be a BufferSlice")
         if dtype is not None and dtype != source.dtype:
             raise TypeError("load dtype must match its source")
         dtype = source.dtype
@@ -468,15 +468,15 @@ def load(
 def store(
     value: TileArrayValue,
     *,
-    target: TensorAccess | None = None,
+    target: BufferSlice | None = None,
     addr: TileArrayValue | None = None,
     tile: Tile,
 ) -> None:
-    """Stores a value through a tensor access or explicit target address."""
+    """Stores a value through a buffer slice or explicit target address."""
     if (target is None) == (addr is None):
         raise ValueError("store requires exactly one of target and addr")
-    if target is not None and not isinstance(target, TensorAccess):
-        raise TypeError("store target must be a TensorAccess")
+    if target is not None and not isinstance(target, BufferSlice):
+        raise TypeError("store target must be a BufferSlice")
     operands = (value,) if addr is None else (value, addr)
     _require_active_builder().emit(
         operands=operands,
@@ -495,13 +495,13 @@ def mac(
     input0: TileArrayValue,
     input1: TileArrayValue | None = None,
     *,
-    stationary: TensorAccess,
+    stationary: BufferSlice,
     tile: Tile,
 ) -> tuple[TileArrayValue, TileArrayValue]:
     """Creates one configured MAC operation."""
 
-    if not isinstance(stationary, TensorAccess):
-        raise TypeError("mac stationary data must be a tensor access")
+    if not isinstance(stationary, BufferSlice):
+        raise TypeError("mac stationary data must be a buffer slice")
 
     operands = (input0,) if input1 is None else (input0, input1)
 

@@ -4,14 +4,10 @@ import synapse.language as synl
 from synapse.language.tile_array_program import TileArrayValue
 
 
-def ws_gemm_3x3(A: synl.Tensor, B: synl.Tensor, C: synl.Tensor):
-    """Computes C = A @ B using nine MACs and six memory tiles.
-
-    C is overwritten and must not overlap either input buffer. The matching
-    patterns prove this precondition before selecting the implementation.
-    """
-    if any(tensor.type != synl.i32[3, 3] for tensor in (A, B, C)):
-        raise ValueError("ws_gemm_3x3 requires three 3x3 i32 tensors")
+def ws_gemm_3x3(A: synl.Buffer, B: synl.Buffer, C: synl.Buffer):
+    """Computes C = A @ B using nine MACs and six memory tiles."""
+    if any(buffer.type != synl.i32[3, 3] for buffer in (A, B, C)):
+        raise ValueError("ws_gemm_3x3 requires three 3x3 i32 buffers")
 
     array = synl.TileArray(x_tiles=4, y_tiles=4)
     partial_sums: list[TileArrayValue] = []

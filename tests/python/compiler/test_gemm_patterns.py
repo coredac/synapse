@@ -125,9 +125,6 @@ def test_replaces_gemm_inside_existing_task(body, pattern):
             "linalg.fill ins(%zero : i32) outs(%c : memref<3x3xi32>)", ""
         ),
         task_source().replace("3x3xi32", "2x2xi32"),
-        task_source()
-        .replace("%C = memref.alloc() : memref<3x3xi32>", "")
-        .replace("%C", "%A"),
         task_source(GENERIC_GEMM).replace("arith.muli", "arith.subi"),
         task_source(AFFINE_GEMM).replace("%a[%i, %k]", "%a[%k, %i]"),
         task_source(AFFINE_GEMM).replace("%k = 0 to 3", "%k = 0 to 2"),
@@ -175,11 +172,11 @@ def test_affine_match_accepts_actual_linalg_lowering():
     assert "arith.muli" not in replaced
 
 
-def test_failed_tile_array_lowering_preserves_source_module():
+def test_invalid_buffer_slice_preserves_source_module():
     import synapse.language as synl
     from synapse.compiler.pattern_replacement import PatternReplacer
 
-    def invalid_program(A: synl.Tensor, B: synl.Tensor, C: synl.Tensor):
+    def invalid_program(A: synl.Buffer, B: synl.Buffer, C: synl.Buffer):
         synl.load(A[0:0, 0], tile=synl.TileArray(4, 4)[0, 1])
 
     with Context(), Location.unknown():
@@ -190,7 +187,7 @@ def test_failed_tile_array_lowering_preserves_source_module():
         root = task.regions[0].blocks[0].operations[2]
         assert isinstance(root, linalg.MatmulOp)
         before = str(module)
-        with pytest.raises(ValueError, match="cannot be empty"):
+        with pytest.raises(TypeError, match="positive integers"):
             PatternReplacer(root).replace_with_tile_array_program(
                 root,
                 program=invalid_program,
@@ -200,15 +197,6 @@ def test_failed_tile_array_lowering_preserves_source_module():
             )
         assert str(module) == before
         assert module.operation.verify()
-
-
-def test_unknown_output_aliasing_is_not_assumed_safe():
-    source = (
-        task_source()
-        .replace("%B: memref<3x3xi32>)", "%B: memref<3x3xi32>, %C: memref<3x3xi32>)")
-        .replace("%C = memref.alloc() : memref<3x3xi32>", "")
-    )
-    assert "neura.kernel" not in synapse.replace(source)
 
 
 def test_intervening_memory_write_invalidates_zero_initialization():

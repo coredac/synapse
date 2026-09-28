@@ -15,7 +15,7 @@ from taskflow_mlir.ir import (
     Value,
 )
 
-from synapse.language.types import DType, TensorType
+from synapse.language.types import BufferType, DType
 from synapse.patterns import TileArrayProgramPattern
 
 
@@ -86,11 +86,11 @@ class PatternReplacer:
 
         if operation.operation != self._root.operation:
             raise ValueError("TileArray replacement requires the pattern root")
-        inferred_types = _task_argument_types(operation, arguments)
-        if inferred_types is None:
+        buffer_types = _task_buffer_types(operation, arguments)
+        if buffer_types is None:
             return False
 
-        tile_program = build_tile_array_program(program, argument_types=inferred_types)
+        tile_program = build_tile_array_program(program, argument_types=buffer_types)
         lowering = TileArrayProgramLowering(tile_program)
 
         staged = Module.create()
@@ -153,13 +153,13 @@ def _apply_patterns(
     return replace_count
 
 
-def _task_argument_types(operation, arguments):
-    """Returns supported capture types, or None when the task boundary is unsuitable."""
+def _task_buffer_types(operation, arguments):
+    """Returns supported buffer types, or None when the task boundary is unsuitable."""
     parent = operation.operation.parent
     if parent is None or parent.name != "taskflow.task" or len(operation.results):
         return None
     block = parent.regions[0].blocks[0]
-    types = []
+    buffer_types = []
     for value in arguments:
         if (
             not BlockArgument.isinstance(value)
@@ -178,5 +178,5 @@ def _task_argument_types(operation, arguments):
             return None
         if memref != MemRefType.get(list(memref.shape), memref.element_type):
             return None
-        types.append(TensorType(tuple(memref.shape), dtype))
-    return tuple(types)
+        buffer_types.append(BufferType(tuple(memref.shape), dtype))
+    return tuple(buffer_types)

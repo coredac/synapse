@@ -1,5 +1,5 @@
 import synapse.language as synl
-from synapse.language.types import DType, TensorType
+from synapse.language.types import BufferType, DType
 
 
 def test_dtypes_create_shaped_types():
@@ -9,12 +9,12 @@ def test_dtypes_create_shaped_types():
     assert synl.i32 == DType.I32
     assert synl.f32 == DType.F32
 
-    assert matrix == TensorType(
+    assert matrix == BufferType(
         shape=(4, 4),
         dtype=synl.i32,
     )
 
-    assert vector == TensorType(
+    assert vector == BufferType(
         shape=(8,),
         dtype=synl.f32,
     )

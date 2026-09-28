@@ -12,7 +12,7 @@ from taskflow_mlir.dialects import neura, taskflow
 from taskflow_mlir.ir import Context, DenseI64ArrayAttr, Location, Module
 
 
-def configured_accesses(A: synl.Tensor):
+def configured_accesses(A: synl.Buffer):
     array = synl.TileArray(4, 4)
     synl.load(A[1, 2], tile=array[0, 1])
     synl.load(A[:, ::2], tile=array[0, 2])
@@ -61,11 +61,11 @@ def test_dynamic_ir_uses_address_operands_without_memory_configuration():
     assert "memory_access" not in source
 
 
-def test_empty_configured_queue_is_rejected():
-    def empty(A: synl.Tensor):
+def test_empty_buffer_slice_is_rejected():
+    def empty(A: synl.Buffer):
         synl.load(A[0:0, 0], tile=synl.TileArray(4, 4)[0, 1])
 
-    with pytest.raises(ValueError, match="cannot be empty"):
+    with pytest.raises(TypeError, match="positive integers"):
         lower(empty, argument_types=(synl.i32[3, 3],))
 
 
@@ -80,7 +80,7 @@ def test_dynamic_addresses_reach_backend_mapping():
 
 
 def test_memory_bases_survive_task_argument_grouping():
-    def program(A: synl.Tensor, unused: synl.Tensor, C: synl.Tensor):
+    def program(A: synl.Buffer, unused: synl.Buffer, C: synl.Buffer):
         array = synl.TileArray(4, 4)
         value = synl.load(A[:, 0], tile=array[0, 1])
         synl.store(value, target=C[:, 0], tile=array[1, 0])

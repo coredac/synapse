@@ -10,7 +10,7 @@ from math import prod
 from typing import TYPE_CHECKING, cast
 
 from synapse.language.spatial import Tile
-from synapse.language.tensor import Tensor, TensorAccess
+from synapse.language.values import Buffer, BufferSlice
 from synapse.language.tile_array_program import (
     AddOp,
     ConstantOp,
@@ -21,27 +21,27 @@ from synapse.language.tile_array_program import (
     TileArrayOp,
     TileArrayProgram,
 )
-from synapse.language.types import DType, TensorType
+from synapse.language.types import BufferType, DType
 
 if TYPE_CHECKING:
     from taskflow_mlir.ir import AffineMapAttr, DenseI64ArrayAttr, DictAttr, Value
 
 
-def lower(program_fn: Callable, *, argument_types: tuple[TensorType, ...] = ()) -> str:
+def lower(program_fn: Callable, *, argument_types: tuple[BufferType, ...] = ()) -> str:
     """Lowers a standalone TileArray program to pre-mapping Taskflow and Neura IR."""
     program = build_tile_array_program(program_fn, argument_types=argument_types)
     return TileArrayProgramLowering(program).lower_to_single_task(program_fn.__name__)
 
 
 def build_tile_array_program(
-    program_fn: Callable, *, argument_types: tuple[TensorType, ...] = ()
+    program_fn: Callable, *, argument_types: tuple[BufferType, ...] = ()
 ) -> TileArrayProgram:
-    """Runs a TileArray function and records its operations and tensor accesses.
+    """Runs a TileArray function and records its operations and buffer slices.
 
     Direct compilation and pattern replacement share this construction step.
     It creates a TileArrayProgram without importing or constructing MLIR.
     """
-    # Program arguments currently carry tensor types. Scalar argument capture
+    # Program arguments currently carry buffer types. Scalar argument capture
     # will use Taskflow value dependencies when that frontend path is added.
 
     function_signature = signature(program_fn)
@@ -54,12 +54,12 @@ def build_tile_array_program(
         )
 
     if any(
-        not isinstance(argument_type, TensorType) for argument_type in argument_types
+        not isinstance(argument_type, BufferType) for argument_type in argument_types
     ):
-        raise TypeError("program argument types must be TensorType values")
+        raise TypeError("program argument types must be BufferType values")
 
     arguments = [
-        Tensor(name=name, type=argument_type)
+        Buffer(name=name, type=argument_type)
         for name, argument_type in zip(parameter_names, argument_types)
     ]
 
@@ -199,7 +199,7 @@ class TileArrayProgramLowering:
 
             return str(module)
 
-    def lower_to_kernel(self, argument_values: dict[Tensor, Value]) -> None:
+    def lower_to_kernel(self, argument_values: dict[Buffer, Value]) -> None:
         """Creates one kernel at the caller's insertion point in an existing task.
 
         The caller owns the current context, location, task, and terminator.
@@ -217,7 +217,7 @@ class TileArrayProgramLowering:
 
         # Configuration validation precedes IR insertion.
         metadata = self.get_kernel_metadata()
-        memory_configs: dict[int, tuple[TensorAccess, DenseI64ArrayAttr]] = {}
+        memory_configs: dict[int, tuple[BufferSlice, DenseI64ArrayAttr]] = {}
         for index, operation in enumerate(self.program.operations):
             if isinstance(operation, LoadOp):
                 access = operation.source
@@ -277,16 +277,16 @@ class TileArrayProgramLowering:
 
         raise NotImplementedError(f"unsupported tile-array data type: {dtype.value}")
 
-    def get_memref_type(self, tensor_type: TensorType):
-        """Translates a TensorType into a Taskflow MemRef type."""
+    def get_memref_type(self, buffer_type: BufferType):
+        """Translates a BufferType into a Taskflow MemRef type."""
 
         from taskflow_mlir.ir import MemRefType
 
         return MemRefType.get(
-            list(tensor_type.shape), self.get_mlir_type(tensor_type.dtype)
+            list(buffer_type.shape), self.get_mlir_type(buffer_type.dtype)
         )
 
-    def get_memory_offsets(self, access: TensorAccess) -> DenseI64ArrayAttr:
+    def get_memory_offsets(self, access: BufferSlice) -> DenseI64ArrayAttr:
         """Converts a static access to Neura's constant element-offset array."""
         from taskflow_mlir.ir import DenseI64ArrayAttr
 

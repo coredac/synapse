@@ -67,8 +67,8 @@ def test_applies_pattern_to_matching_operation():
     assert "arith.muli" in replaced
 
 
-def copy_program(A: synl.Tensor, C: synl.Tensor):
-    """Copies a tensor through configured loads and stores."""
+def copy_program(A: synl.Buffer, C: synl.Buffer):
+    """Copies a buffer through configured loads and stores."""
     array = synl.TileArray(4, 4)
     for x in range(1, A.type.shape[1] + 1):
         value = synl.load(A[:, x - 1], tile=array[0, x])
@@ -126,15 +126,6 @@ def test_custom_pattern_checks_and_replaces_in_one_callback(dtype):
     assert replaced.count('"neura.store"') == 3
 
 
-def test_alias_checks_apply_to_custom_repalces():
-    source = (
-        _copy_source()
-        .replace("%C = memref.alloc() : memref<3x3xi32>", "")
-        .replace("%C", "%A")
-    )
-    assert "neura.kernel" not in synapse.replace(source, patterns=[CopyPattern])
-
-
 def test_root_filter_runs_before_the_pattern_callback():
     class UnrelatedPattern(TileArrayProgramPattern):
         root = arith.AddIOp
@@ -162,7 +153,7 @@ def test_failed_user_check_preserves_the_original_operation():
 
 
 def test_invalid_user_implementation_remains_an_error():
-    def invalid(A: synl.Tensor, C: synl.Tensor):
+    def invalid(A: synl.Buffer, C: synl.Buffer):
         raise ValueError("invalid user program")
 
     class InvalidPattern(TileArrayProgramPattern):

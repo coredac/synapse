@@ -26,12 +26,12 @@ def test_dynamic_addresses_are_explicit_operands():
 
 
 def test_memory_configuration_retains_static_accesses():
-    tensor = synl.Tensor("A", synl.i32[3, 4])
+    buffer = synl.Buffer("A", synl.i32[3, 4])
     array = synl.TileArray(4, 4)
-    builder = TileArrayBuilder((tensor,))
+    builder = TileArrayBuilder((buffer,))
     with builder:
-        value = synl.load(tensor[1, 2], tile=array[0, 1])
-        synl.store(value, target=tensor[:, ::2], tile=array[1, 0])
+        value = synl.load(buffer[1, 2], tile=array[0, 1])
+        synl.store(value, target=buffer[:, ::2], tile=array[1, 0])
     read, write = builder.build().operations
     assert isinstance(read, LoadOp)
     assert isinstance(write, StoreOp)
@@ -44,21 +44,21 @@ def test_memory_configuration_retains_static_accesses():
 
 
 def test_rejected_memory_forms_do_not_consume_value_ids():
-    tensor = synl.Tensor("A", synl.i32[3, 3])
+    buffer = synl.Buffer("A", synl.i32[3, 3])
     array = synl.TileArray(4, 4)
-    builder = TileArrayBuilder((tensor,))
+    builder = TileArrayBuilder((buffer,))
     with builder:
         addr = synl.constant(0, tile=array[1, 1])
         with pytest.raises(ValueError, match="exactly one"):
-            synl.load(tensor[:, 0], addr=addr, tile=array[0, 1])
+            synl.load(buffer[:, 0], addr=addr, tile=array[0, 1])
         with pytest.raises(TypeError, match="explicit DType"):
             synl.load(addr=addr, tile=array[0, 1])
         with pytest.raises(TypeError, match="must match"):
-            synl.load(tensor[:, 0], dtype=synl.f32, tile=array[0, 1])
+            synl.load(buffer[:, 0], dtype=synl.f32, tile=array[0, 1])
         value = synl.load(addr=addr, dtype=synl.i32, tile=array[0, 1])
         assert value.id == 1
         with pytest.raises(ValueError, match="exactly one"):
-            synl.store(value, target=tensor[:, 0], addr=addr, tile=array[1, 0])
+            synl.store(value, target=buffer[:, 0], addr=addr, tile=array[1, 0])
     assert len(builder.build().operations) == 2
 
 
