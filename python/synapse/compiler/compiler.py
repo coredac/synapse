@@ -25,22 +25,23 @@ def compile(
     if isinstance(program, str):
         if argument_types:
             raise ValueError("IR inputs already carry their argument types")
-        neura_ir = replace(program, patterns=patterns)
+        backend_ir = _compile_task_graph(program, patterns=patterns)
     else:
         if patterns is not None:
             raise ValueError("replacement patterns apply to IR inputs")
-        neura_ir = lower(program, argument_types=argument_types)
-    return _run_neura_backend(neura_ir)
+        backend_ir = lower(program, argument_types=argument_types)
+    return _run_neura_backend(backend_ir)
 
 
-def replace(
+def _compile_task_graph(
     source: str,
     *,
-    patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
+    patterns: Sequence[type[TileArrayProgramPattern]] | None,
 ) -> str:
-    """Applies patterns to task IR while preserving unmatched computations."""
+    """Applies patterns before and after Linalg-to-Affine conversion."""
     from taskflow_mlir.dialects import neura, taskflow
     from taskflow_mlir.ir import Context, Location, Module
+    from taskflow_mlir.passmanager import PassManager
 
     from synapse.compiler.pattern_replacement import apply_patterns
     from synapse.patterns.gemm_pattern import (
@@ -50,18 +51,29 @@ def replace(
     )
 
     if patterns is None:
-        patterns = [LinalgGemmPattern, LinalgGenericGemmPattern, AffineGemmPattern]
+        replacement_patterns = (
+            LinalgGemmPattern,
+            LinalgGenericGemmPattern,
+            AffineGemmPattern,
+        )
+    else:
+        replacement_patterns = patterns
+
     with Context(), Location.unknown():
         taskflow.register_dialect()
         neura.register_dialect()
         module = Module.parse(source)
-        apply_patterns(module, patterns)
+        apply_patterns(module, replacement_patterns)
+        PassManager.parse(
+            "builtin.module(func.func(convert-linalg-to-affine-loops))"
+        ).run(module.operation)
+        apply_patterns(module, replacement_patterns)
         if not module.operation.verify():
-            raise ValueError("replaced module failed verification")
+            raise ValueError("compiled task graph failed verification")
         return str(module)
 
 
-def _run_neura_backend(neura_ir: str) -> str:
+def _run_neura_backend(backend_ir: str) -> str:
     """Legalizes values, inserts data movement, and runs template mapping."""
 
     repository_root = Path(__file__).resolve().parents[3]
@@ -108,7 +120,7 @@ def _run_neura_backend(neura_ir: str) -> str:
 
         completed = subprocess.run(
             command,
-            input=neura_ir,
+            input=backend_ir,
             capture_output=True,
             text=True,
             check=False,
