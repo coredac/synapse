@@ -11,7 +11,6 @@ from taskflow_mlir.ir import (
     IntegerType,
     MemRefType,
     Module,
-    OpResult,
     OpView,
     Value,
 )
@@ -74,10 +73,9 @@ class PatternReplacer:
     ) -> bool:
         """Replaces a compatible buffer computation with a TileArray kernel.
 
-        The pattern establishes computation semantics. Shared compiler checks
-        establish type, task, and memory compatibility. An unsuitable candidate
-        returns False without mutation; invalid implementations raise errors.
-        Staging validates the generated kernel before the source IR is changed.
+        The pattern establishes applicability and semantic preconditions. The
+        shared path adapts argument types and validates the generated kernel
+        before changing the source IR.
         """
         from taskflow_mlir.dialects import func
 
@@ -94,8 +92,6 @@ class PatternReplacer:
 
         tile_program = build_tile_array_program(program, argument_types=inferred_types)
         lowering = TileArrayProgramLowering(tile_program)
-        if not _replacement_memory_is_legal(operation, arguments, lowering):
-            return False
 
         staged = Module.create()
         with InsertionPoint(staged.body):
@@ -157,52 +153,6 @@ def _apply_patterns(
     return replace_count
 
 
-def _base_buffer(value):
-    """Traces task captures and view-like operations to their memory origin."""
-    while True:
-        if BlockArgument.isinstance(value):
-            argument = BlockArgument(value)
-            parent = argument.owner.owner.operation
-            if parent.name == "taskflow.task":
-                value = parent.operands[argument.arg_number]
-                continue
-            return value
-        if not OpResult.isinstance(value):
-            return value
-        producer = OpResult(value).owner
-        if producer.name in (
-            "memref.cast",
-            "memref.subview",
-            "memref.reinterpret_cast",
-        ):
-            value = producer.operands[0]
-            continue
-        return value
-
-
-def _disjoint_buffers(lhs, rhs):
-    """Proves disjointness for fresh allocations and incoming function buffers."""
-    lhs, rhs = _base_buffer(lhs), _base_buffer(rhs)
-    if lhs == rhs:
-        return False
-
-    def is_allocation(value):
-        return OpResult.isinstance(value) and OpResult(value).owner.name in (
-            "memref.alloc",
-            "memref.alloca",
-        )
-
-    def is_function_argument(value):
-        return (
-            BlockArgument.isinstance(value)
-            and BlockArgument(value).owner.owner.operation.name == "func.func"
-        )
-
-    return (
-        is_allocation(lhs) and (is_allocation(rhs) or is_function_argument(rhs))
-    ) or (is_allocation(rhs) and is_function_argument(lhs))
-
-
 def _task_argument_types(operation, arguments):
     """Returns supported capture types, or None when the task boundary is unsuitable."""
     parent = operation.operation.parent
@@ -230,29 +180,3 @@ def _task_argument_types(operation, arguments):
             return None
         types.append(TensorType(tuple(memref.shape), dtype))
     return tuple(types)
-
-
-def _replacement_memory_is_legal(operation, arguments, lowering):
-    """Checks inferred implementation effects against task declarations and aliasing."""
-    if lowering.has_dynamic_memory:
-        return False
-    task = operation.operation.parent.opview
-    block_arguments = tuple(task.body.blocks[0].arguments)
-    read_count = len(task.will_reads)
-    write_count = len(task.will_writes)
-    declared_reads = block_arguments[:read_count]
-    declared_writes = block_arguments[read_count : read_count + write_count]
-    values = dict(zip(lowering.program.arguments, arguments))
-    reads = lowering.read_arguments
-    writes = lowering.write_arguments
-    if any(values[argument] not in declared_reads for argument in reads):
-        return False
-    if any(values[argument] not in declared_writes for argument in writes):
-        return False
-    for output in writes:
-        for other in reads + writes:
-            if output is other:
-                continue
-            if not _disjoint_buffers(values[output], values[other]):
-                return False
-    return True
