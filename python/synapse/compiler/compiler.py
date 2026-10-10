@@ -1,13 +1,36 @@
 """Top-Level Synapse Compilation Flow."""
 
-import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from synapse.frontend.lowering import lower
 from synapse.language.types import BufferType
 from synapse.patterns import TileArrayProgramPattern
+
+_NEURA_BACKEND_PIPELINE = """builtin.module(
+  convert-affine-to-taskflow,
+  func.func(construct-hyperblock-from-task),
+  classify-task-and-counter,
+  convert-taskflow-to-neura,
+  lower-affine,
+  convert-scf-to-cf,
+  convert-cf-to-llvm,
+  assign-accelerator,
+  lower-memref-to-neura,
+  lower-arith-to-neura,
+  lower-builtin-to-neura,
+  lower-llvm-to-neura,
+  canonicalize-return,
+  canonicalize-cast,
+  promote-input-arg-to-const,
+  fold-constant,
+  canonicalize-live-in,
+  leverage-predicated-value,
+  transform-ctrl-to-data-flow,
+  fold-constant,
+  insert-data-mov,
+  map-to-accelerator
+)"""
 
 
 def compile(
@@ -16,6 +39,7 @@ def compile(
     target: str,
     argument_types: tuple[BufferType, ...] = (),
     patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
+    architecture_spec: str | Path | None = None,
 ) -> str:
     """Compiles a TileArray function or bufferized task IR for the backend."""
 
@@ -25,18 +49,40 @@ def compile(
     if isinstance(program, str):
         if argument_types:
             raise ValueError("IR inputs already carry their argument types")
-        backend_ir = _compile_task_graph(program, patterns=patterns)
+        source = program
     else:
         if patterns is not None:
             raise ValueError("replacement patterns apply to IR inputs")
-        backend_ir = lower(program, argument_types=argument_types)
-    return _run_neura_backend(backend_ir)
+        source = lower(program, argument_types=argument_types)
+
+    if architecture_spec is None:
+        architecture_spec = (
+            Path(__file__).resolve().parents[3]
+            / "mlir"
+            / "amoeba"
+            / "thirdparty"
+            / "neura"
+            / "test"
+            / "arch_spec"
+            / "architecture.yaml"
+        )
+    architecture_spec = Path(architecture_spec)
+    if not architecture_spec.is_file():
+        raise FileNotFoundError(
+            f"Neura architecture specification does not exist: {architecture_spec}"
+        )
+    return _compile_task_graph(
+        source,
+        patterns=patterns,
+        architecture_spec=architecture_spec,
+    )
 
 
 def _compile_task_graph(
     source: str,
     *,
     patterns: Sequence[type[TileArrayProgramPattern]] | None,
+    architecture_spec: Path,
 ) -> str:
     """Applies patterns before and after Linalg-to-Affine conversion."""
     from taskflow_mlir.dialects import neura, taskflow
@@ -59,6 +105,8 @@ def _compile_task_graph(
     else:
         replacement_patterns = patterns
 
+    taskflow.set_neura_architecture_spec(str(architecture_spec))
+
     with Context(), Location.unknown():
         taskflow.register_dialect()
         neura.register_dialect()
@@ -68,70 +116,7 @@ def _compile_task_graph(
             "builtin.module(func.func(convert-linalg-to-affine-loops))"
         ).run(module.operation)
         apply_patterns(module, replacement_patterns)
+        PassManager.parse(_NEURA_BACKEND_PIPELINE).run(module.operation)
         if not module.operation.verify():
             raise ValueError("compiled task graph failed verification")
         return str(module)
-
-
-def _run_neura_backend(backend_ir: str) -> str:
-    """Legalizes values, inserts data movement, and runs template mapping."""
-
-    repository_root = Path(__file__).resolve().parents[3]
-    amoeba_opt = (
-        repository_root
-        / "build"
-        / "amoeba"
-        / "tools"
-        / "mlir-amoeba-opt"
-        / "mlir-amoeba-opt"
-    )
-
-    if not amoeba_opt.is_file():
-        raise FileNotFoundError(f"Amoeba compiler is not built: {amoeba_opt}")
-
-    architecture_spec = (
-        repository_root
-        / "mlir"
-        / "amoeba"
-        / "thirdparty"
-        / "neura"
-        / "test"
-        / "arch_spec"
-        / "architecture.yaml"
-    )
-
-    with TemporaryDirectory(prefix="synapse-") as temporary_directory:
-        output_path = Path(temporary_directory) / "mapped.mlir"
-
-        command = [
-            str(amoeba_opt),
-            f"--neura-architecture-spec={architecture_spec}",
-            "--promote-input-arg-to-const",
-            "--leverage-predicated-value",
-            "--insert-data-mov",
-            (
-                "--map-to-accelerator="
-                "mapping-strategy=template "
-                "mapping-mode=spatial-only"
-            ),
-            "-o",
-            str(output_path),
-        ]
-
-        completed = subprocess.run(
-            command,
-            input=backend_ir,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=temporary_directory,
-        )
-
-        if completed.returncode != 0:
-            diagnostics = "\n".join(
-                output for output in (completed.stdout, completed.stderr) if output
-            )
-
-            raise RuntimeError(f"Neura backend compilation failed:\n{diagnostics}")
-
-        return output_path.read_text(encoding="utf-8")
