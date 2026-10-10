@@ -153,6 +153,7 @@ def test_replaces_gemm_inside_existing_task(body, pattern):
         assert kernel.operation.get_asm(
             use_local_scope=True
         ) == direct_kernel.operation.get_asm(use_local_scope=True)
+        assert "linalg.fill" not in str(module)
         assert str(module).count('"neura.load"') == 3
         assert str(module).count('"neura.mac"') == 9
         assert str(module).count('"neura.store"') == 3
@@ -212,8 +213,12 @@ def test_compile_preserves_memref_dependency_between_tasks():
 
 
 def test_compile_applies_affine_patterns_after_linalg_lowering():
+    commuted = GENERIC_GEMM.replace(
+        "arith.muli %lhs, %rhs",
+        "arith.muli %rhs, %lhs",
+    )
     mapped = synapse.compile(
-        task_source(),
+        task_source(commuted),
         target="neura",
         patterns=[AffineGemmPattern],
     )
