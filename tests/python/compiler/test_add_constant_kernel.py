@@ -6,7 +6,7 @@ PRE_MAPPING_IR = """
 module {
   func.func @add_constant() {
     taskflow.task @add_constant : () -> () {
-      neura.kernel attributes {accelerator = "neura"} {
+      neura.kernel attributes {accelerator = "neura", kernel_metadata = {kind = "template"}} {
         %0 = "neura.constant"() <{value = 1 : i32}> {placement = {x = 0 : i32, y = 0 : i32}} : () -> i32
         %1 = "neura.constant"() <{value = 2 : i32}> {placement = {x = 2 : i32, y = 0 : i32}} : () -> i32
         %2 = "neura.add"(%0, %1) {placement = {x = 1 : i32, y = 0 : i32}} : (i32, i32) -> i32
@@ -24,13 +24,11 @@ MAPPED_IR = """
 module {
   func.func @add_constant() {
     taskflow.task @add_constant : () -> () {
-      neura.kernel attributes {accelerator = "neura", mapping_info = {compiled_ii = 1 : i32, mapping_mode = "spatial-only", mapping_strategy = "template", rec_mii = 1 : i32, res_mii = 1 : i32, x_tiles = 4 : i32, y_tiles = 4 : i32}} {
+      neura.kernel attributes {accelerator = "neura", kernel_metadata = {kind = "template"}, mapping_info = {compiled_ii = 1 : i32, mapping_mode = "spatial-only", mapping_strategy = "template", rec_mii = 1 : i32, res_mii = 1 : i32, x_tiles = 4 : i32, y_tiles = 4 : i32}} {
         %0 = "neura.constant"() <{value = 1 : i32}> {dfg_id = 0 : i32, mapping_locs = [{id = 0 : i32, index_per_ii = 0 : i32, invalid_iterations = 0 : i32, resource = "tile", time_step = 0 : i32, x = 0 : i32, y = 0 : i32}]} : () -> !neura.data<i32, i1>
-        %1 = "neura.constant"() <{value = 2 : i32}> {dfg_id = 1 : i32, mapping_locs = [{id = 2 : i32, index_per_ii = 0 : i32, invalid_iterations = 0 : i32, resource = "tile", time_step = 0 : i32, x = 2 : i32, y = 0 : i32}]} : () -> !neura.data<i32, i1>
-        %2 = "neura.data_mov"(%0) {dfg_id = 3 : i32, mapping_locs = [{id = 0 : i32, index_per_ii = 0 : i32, invalid_iterations = 0 : i32, resource = "link", time_step = 0 : i32}]} : (!neura.data<i32, i1>) -> !neura.data<i32, i1>
-        %3 = "neura.data_mov"(%1) {dfg_id = 4 : i32, mapping_locs = [{id = 5 : i32, index_per_ii = 0 : i32, invalid_iterations = 0 : i32, resource = "link", time_step = 0 : i32}]} : (!neura.data<i32, i1>) -> !neura.data<i32, i1>
-        %4 = "neura.add"(%2, %3) {dfg_id = 5 : i32, mapping_locs = [{id = 1 : i32, index_per_ii = 0 : i32, invalid_iterations = 1 : i32, resource = "tile", time_step = 1 : i32, x = 1 : i32, y = 0 : i32}]} : (!neura.data<i32, i1>, !neura.data<i32, i1>) -> !neura.data<i32, i1>
-        neura.yield {dfg_id = 2 : i32}
+        %1 = "neura.data_mov"(%0) {dfg_id = 2 : i32, mapping_locs = [{id = 0 : i32, index_per_ii = 0 : i32, invalid_iterations = 0 : i32, resource = "link", time_step = 0 : i32}]} : (!neura.data<i32, i1>) -> !neura.data<i32, i1>
+        %2 = "neura.add"(%1) {dfg_id = 3 : i32, mapping_locs = [{id = 1 : i32, index_per_ii = 0 : i32, invalid_iterations = 1 : i32, resource = "tile", time_step = 1 : i32, x = 1 : i32, y = 0 : i32}], rhs_value = 2 : i32} : (!neura.data<i32, i1>) -> !neura.data<i32, i1>
+        neura.yield {dfg_id = 1 : i32}
       }
       taskflow.yield
     }

@@ -71,6 +71,47 @@ module {
 """.replace("BODY", body)
 
 
+def multi_task_source():
+    """Links two GEMM tasks through the first task's completed write."""
+    return """
+module {
+  func.func @two_gemms(
+      %A: memref<3x3xi32>,
+      %B: memref<3x3xi32>) -> memref<3x3xi32> {
+    %C = memref.alloc() : memref<3x3xi32>
+    %D = memref.alloc() : memref<3x3xi32>
+    %first = taskflow.task @linalg_gemm
+      will_reads(%A, %B : memref<3x3xi32>, memref<3x3xi32>)
+      will_writes(%C : memref<3x3xi32>)
+      [original_read_memrefs(%A, %B : memref<3x3xi32>, memref<3x3xi32>),
+       original_write_memrefs(%C : memref<3x3xi32>)]
+      : (memref<3x3xi32>, memref<3x3xi32>, memref<3x3xi32>)
+        -> memref<3x3xi32> {
+    ^bb0(%a: memref<3x3xi32>, %b: memref<3x3xi32>, %c: memref<3x3xi32>):
+      %zero = arith.constant 0 : i32
+      linalg.fill ins(%zero : i32) outs(%c : memref<3x3xi32>)
+      FIRST_BODY
+      taskflow.yield done_writes(%c : memref<3x3xi32>)
+    }
+    %second = taskflow.task @affine_gemm
+      will_reads(%first, %B : memref<3x3xi32>, memref<3x3xi32>)
+      will_writes(%D : memref<3x3xi32>)
+      [original_read_memrefs(%C, %B : memref<3x3xi32>, memref<3x3xi32>),
+       original_write_memrefs(%D : memref<3x3xi32>)]
+      : (memref<3x3xi32>, memref<3x3xi32>, memref<3x3xi32>)
+        -> memref<3x3xi32> {
+    ^bb0(%a: memref<3x3xi32>, %b: memref<3x3xi32>, %c: memref<3x3xi32>):
+      %zero = arith.constant 0 : i32
+      linalg.fill ins(%zero : i32) outs(%c : memref<3x3xi32>)
+      SECOND_BODY
+      taskflow.yield done_writes(%c : memref<3x3xi32>)
+    }
+    return %second : memref<3x3xi32>
+  }
+}
+""".replace("FIRST_BODY", LINALG_GEMM).replace("SECOND_BODY", AFFINE_GEMM)
+
+
 @pytest.mark.parametrize(
     "body,pattern",
     [
@@ -112,6 +153,7 @@ def test_replaces_gemm_inside_existing_task(body, pattern):
         assert kernel.operation.get_asm(
             use_local_scope=True
         ) == direct_kernel.operation.get_asm(use_local_scope=True)
+        assert "linalg.fill" not in str(module)
         assert str(module).count('"neura.load"') == 3
         assert str(module).count('"neura.mac"') == 9
         assert str(module).count('"neura.store"') == 3
@@ -152,24 +194,35 @@ def test_public_compile_accepts_task_ir():
     assert "linalg.matmul" not in mapped
 
 
-def test_affine_match_accepts_actual_linalg_lowering():
-    import subprocess
-    from pathlib import Path
+def test_compile_preserves_memref_dependency_between_tasks():
+    mapped = synapse.compile(multi_task_source(), target="neura")
+    with Context(), Location.unknown():
+        taskflow.register_dialect()
+        neura.register_dialect()
+        module = Module.parse(mapped)
+        function = module.body.operations[0]
+        tasks = [
+            operation
+            for operation in function.regions[0].blocks[0].operations
+            if operation.operation.name == "taskflow.task"
+        ]
+        assert len(tasks) == 2
+        assert tasks[1].operands[0] == tasks[0].results[0]
+    assert mapped.count("compiled_ii = 1") == 2
+    assert mapped.count("neura.kernel") == 2
 
-    executable = (
-        Path(__file__).resolve().parents[3]
-        / "build/amoeba/tools/mlir-amoeba-opt/mlir-amoeba-opt"
+
+def test_compile_applies_affine_patterns_after_linalg_lowering():
+    commuted = GENERIC_GEMM.replace(
+        "arith.muli %lhs, %rhs",
+        "arith.muli %rhs, %lhs",
     )
-    lowered = subprocess.run(
-        [str(executable), "--convert-linalg-to-affine-loops"],
-        input=task_source(),
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout
-    replaced = synapse.replace(lowered, patterns=[AffineGemmPattern])
-    assert "neura.kernel" in replaced
-    assert "arith.muli" not in replaced
+    mapped = synapse.compile(
+        task_source(commuted),
+        target="neura",
+        patterns=[AffineGemmPattern],
+    )
+    assert "compiled_ii = 1" in mapped
 
 
 def test_invalid_buffer_slice_preserves_source_module():
@@ -208,4 +261,12 @@ def test_intervening_memory_write_invalidates_zero_initialization():
     """
         + LINALG_GEMM
     )
-    assert "neura.kernel" not in synapse.replace(task_source(body))
+    with Context(), Location.unknown():
+        taskflow.register_dialect()
+        neura.register_dialect()
+        module = Module.parse(task_source(body))
+        apply_patterns(
+            module,
+            (LinalgGemmPattern, LinalgGenericGemmPattern, AffineGemmPattern),
+        )
+        assert "neura.kernel" not in str(module)

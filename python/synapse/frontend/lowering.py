@@ -339,7 +339,7 @@ class TileArrayProgramLowering:
 
         stationary = self.program.stationary
         if stationary is None:
-            return None
+            return DictAttr.get({"kind": StringAttr.get("template")})
         return DictAttr.get(
             {
                 "kind": StringAttr.get("template"),

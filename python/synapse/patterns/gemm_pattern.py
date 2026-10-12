@@ -13,6 +13,7 @@ from taskflow_mlir.ir import (
     IntegerType,
     MemRefType,
     OpResult,
+    OpView,
 )
 
 from synapse.library import ws_gemm_3x3
@@ -65,15 +66,15 @@ def _zero(value):
     )
 
 
-def _has_zero_output(operation, output):
-    """Checks the overwrite template's precondition on the initial accumulator.
+def _zero_output_initialization(operation, output) -> OpView | None:
+    """Finds the zero initialization consumed by the overwrite template.
 
     Named matmul and the recognized loop bodies compute C += A @ B, whereas
     the WS program computes C = A @ B. A preceding zero fill makes them agree.
     """
     parent = operation.operation.parent
     if parent is None:
-        return False
+        return None
     previous = None
     found = False
     for region in parent.regions:
@@ -90,19 +91,23 @@ def _has_zero_output(operation, output):
         if found:
             break
     if previous is None:
-        return False
+        return None
     if isinstance(previous, linalg.FillOp):
-        return tuple(previous.outputs) == (output,) and _zero(previous.inputs[0])
+        return (
+            previous
+            if tuple(previous.outputs) == (output,) and _zero(previous.inputs[0])
+            else None
+        )
 
     rows, columns = MemRefType(output.type).shape
     outer = _loop(previous, rows)
     if outer is None or len(tuple(outer.operations)) != 2:
-        return False
+        return None
     inner = _loop(outer.operations[0], columns)
     if inner is None or len(tuple(inner.operations)) != 2:
-        return False
+        return None
     store = inner.operations[0]
-    return (
+    matches = (
         store.operation.name == "affine.store"
         and store.operands[1] == output
         and _zero(store.operands[0])
@@ -112,6 +117,7 @@ def _has_zero_output(operation, output):
         )
         == (outer.arguments[0], inner.arguments[0])
     )
+    return previous if matches else None
 
 
 class LinalgGemmPattern(TileArrayProgramPattern):
@@ -130,13 +136,17 @@ class LinalgGemmPattern(TileArrayProgramPattern):
             return False
         if any(value.type != expected for value in arguments):
             return False
-        if not _has_zero_output(operation, arguments[2]):
+        initialization = _zero_output_initialization(operation, arguments[2])
+        if initialization is None:
             return False
-        return replacer.replace_with_tile_array_program(
+        if not replacer.replace_with_tile_array_program(
             operation,
             program=ws_gemm_3x3,
             arguments=arguments,
-        )
+        ):
+            return False
+        replacer.erase_op(initialization)
+        return True
 
 
 class LinalgGenericGemmPattern(TileArrayProgramPattern):
@@ -191,13 +201,17 @@ class LinalgGenericGemmPattern(TileArrayProgramPattern):
             return False
         if any(value.type != expected for value in arguments):
             return False
-        if not _has_zero_output(operation, arguments[2]):
+        initialization = _zero_output_initialization(operation, arguments[2])
+        if initialization is None:
             return False
-        return replacer.replace_with_tile_array_program(
+        if not replacer.replace_with_tile_array_program(
             operation,
             program=ws_gemm_3x3,
             arguments=arguments,
-        )
+        ):
+            return False
+        replacer.erase_op(initialization)
+        return True
 
 
 class AffineGemmPattern(TileArrayProgramPattern):
@@ -258,7 +272,10 @@ class AffineGemmPattern(TileArrayProgramPattern):
             or tuple(
                 multiply.operands[index] for index in range(len(multiply.operands))
             )
-            != (lhs.results[0], rhs.results[0])
+            not in (
+                (lhs.results[0], rhs.results[0]),
+                (rhs.results[0], lhs.results[0]),
+            )
             or set(add.operands[index] for index in range(len(add.operands)))
             != {current.results[0], multiply.results[0]}
             or tuple(store.operands[index] for index in range(len(store.operands)))[:2]
@@ -269,10 +286,14 @@ class AffineGemmPattern(TileArrayProgramPattern):
         expected = MemRefType.get([3, 3], IntegerType.get_signless(32))
         if any(value.type != expected for value in arguments):
             return False
-        if not _has_zero_output(operation, arguments[2]):
+        initialization = _zero_output_initialization(operation, arguments[2])
+        if initialization is None:
             return False
-        return replacer.replace_with_tile_array_program(
+        if not replacer.replace_with_tile_array_program(
             operation,
             program=ws_gemm_3x3,
             arguments=arguments,
-        )
+        ):
+            return False
+        replacer.erase_op(initialization)
+        return True

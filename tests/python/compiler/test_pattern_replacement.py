@@ -1,9 +1,9 @@
 """Tests for the Synapse MLIR pattern driver."""
 
+from collections.abc import Sequence
 from typing import cast
 
 import pytest
-import synapse
 import synapse.language as synl
 from synapse.compiler.pattern_replacement import (
     PatternReplacer,
@@ -12,6 +12,20 @@ from synapse.compiler.pattern_replacement import (
 from synapse.patterns import TileArrayProgramPattern
 from taskflow_mlir.dialects import arith, func, linalg, neura, taskflow
 from taskflow_mlir.ir import Context, Location, Module
+
+
+def _apply_to_source(
+    source: str,
+    patterns: Sequence[type[TileArrayProgramPattern]],
+) -> str:
+    """Applies selected patterns to parsed test IR."""
+    with Context(), Location.unknown():
+        taskflow.register_dialect()
+        neura.register_dialect()
+        module = Module.parse(source)
+        apply_patterns(module, patterns)
+        assert module.operation.verify()
+        return str(module)
 
 
 class AddToMultiplyPattern(TileArrayProgramPattern):
@@ -120,7 +134,7 @@ def _copy_source():
 @pytest.mark.parametrize("dtype", ["i32", "f32"])
 def test_custom_pattern_checks_and_replaces_in_one_callback(dtype):
     source = _copy_source().replace("3x3xi32", f"3x3x{dtype}")
-    replaced = synapse.replace(source, patterns=[CopyPattern])
+    replaced = _apply_to_source(source, [CopyPattern])
     assert "linalg.copy" not in replaced
     assert replaced.count('"neura.load"') == 3
     assert replaced.count('"neura.store"') == 3
@@ -135,7 +149,7 @@ def test_root_filter_runs_before_the_pattern_callback():
             """Detects a callback invoked for an unrelated root type."""
             raise AssertionError("the root filter must reject this operation")
 
-    assert "linalg.copy" in synapse.replace(_copy_source(), patterns=[UnrelatedPattern])
+    assert "linalg.copy" in _apply_to_source(_copy_source(), [UnrelatedPattern])
 
 
 def test_failed_user_check_preserves_the_original_operation():
@@ -147,7 +161,7 @@ def test_failed_user_check_preserves_the_original_operation():
             """Declines a candidate after the root type has matched."""
             return False
 
-    replaced = synapse.replace(_copy_source(), patterns=[RejectingPattern])
+    replaced = _apply_to_source(_copy_source(), [RejectingPattern])
     assert "linalg.copy" in replaced
     assert "neura.kernel" not in replaced
 
@@ -170,4 +184,4 @@ def test_invalid_user_implementation_remains_an_error():
             )
 
     with pytest.raises(ValueError, match="invalid user program"):
-        synapse.replace(_copy_source(), patterns=[InvalidPattern])
+        _apply_to_source(_copy_source(), [InvalidPattern])
