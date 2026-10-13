@@ -5,7 +5,7 @@ from pathlib import Path
 
 from synapse.frontend.lowering import lower
 from synapse.language.types import BufferType
-from synapse.patterns import TileArrayProgramPattern
+from synapse.patterns import IRRewritePattern, TileArrayProgramReplacePattern
 
 _NEURA_BACKEND_PIPELINE = """builtin.module(
   convert-affine-to-taskflow,
@@ -38,10 +38,15 @@ def compile(
     *,
     target: str,
     argument_types: tuple[BufferType, ...] = (),
-    patterns: Sequence[type[TileArrayProgramPattern]] | None = None,
+    replace_patterns: Sequence[type[TileArrayProgramReplacePattern]] | None = None,
+    rewrite_patterns: Sequence[type[IRRewritePattern]] = (),
     architecture_spec: str | Path | None = None,
 ) -> str:
-    """Compiles a TileArray function or bufferized task IR for the backend."""
+    """Compiles a TileArray function or bufferized task IR for the backend.
+
+    rewrite_patterns extend built-in IR rewrites at each source level.
+    replace_patterns extend built-in TileArray implementation patterns.
+    """
 
     # The current compilation path targets Neura.
     if target != "neura":
@@ -51,7 +56,7 @@ def compile(
             raise ValueError("IR inputs already carry their argument types")
         source = program
     else:
-        if patterns is not None:
+        if replace_patterns is not None:
             raise ValueError("replacement patterns apply to IR inputs")
         source = lower(program, argument_types=argument_types)
 
@@ -73,7 +78,8 @@ def compile(
         )
     return _compile_task_graph(
         source,
-        patterns=patterns,
+        replace_patterns=replace_patterns,
+        rewrite_patterns=rewrite_patterns,
         architecture_spec=architecture_spec,
     )
 
@@ -81,29 +87,17 @@ def compile(
 def _compile_task_graph(
     source: str,
     *,
-    patterns: Sequence[type[TileArrayProgramPattern]] | None,
+    replace_patterns: Sequence[type[TileArrayProgramReplacePattern]] | None,
+    rewrite_patterns: Sequence[type[IRRewritePattern]],
     architecture_spec: Path,
 ) -> str:
-    """Applies patterns before and after Linalg-to-Affine conversion."""
+    """Normalizes source IR, selects templates, and runs the Neura backend."""
     from taskflow_mlir.dialects import neura, taskflow
     from taskflow_mlir.ir import Context, Location, Module
     from taskflow_mlir.passmanager import PassManager
 
-    from synapse.compiler.pattern_replacement import apply_patterns
-    from synapse.patterns.gemm_pattern import (
-        AffineGemmPattern,
-        LinalgGemmPattern,
-        LinalgGenericGemmPattern,
-    )
-
-    if patterns is None:
-        replacement_patterns = (
-            LinalgGemmPattern,
-            LinalgGenericGemmPattern,
-            AffineGemmPattern,
-        )
-    else:
-        replacement_patterns = patterns
+    from synapse.compiler.pattern_replace import apply_replacements
+    from synapse.compiler.pattern_rewrite import apply_rewrites
 
     taskflow.set_neura_architecture_spec(str(architecture_spec))
 
@@ -111,11 +105,13 @@ def _compile_task_graph(
         taskflow.register_dialect()
         neura.register_dialect()
         module = Module.parse(source)
-        apply_patterns(module, replacement_patterns)
+        apply_rewrites(module, rewrite_patterns)
+        apply_replacements(module, replace_patterns)
         PassManager.parse(
             "builtin.module(func.func(convert-linalg-to-affine-loops))"
         ).run(module.operation)
-        apply_patterns(module, replacement_patterns)
+        apply_rewrites(module, rewrite_patterns)
+        apply_replacements(module, replace_patterns)
         PassManager.parse(_NEURA_BACKEND_PIPELINE).run(module.operation)
         if not module.operation.verify():
             raise ValueError("compiled task graph failed verification")

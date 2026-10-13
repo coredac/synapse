@@ -16,53 +16,24 @@ from taskflow_mlir.ir import (
 )
 
 from synapse.language.types import BufferType, DType
-from synapse.patterns import TileArrayProgramPattern
+from synapse.patterns import TileArrayProgramReplacePattern
+from synapse.patterns.gemm_pattern import (
+    AffineGemmPattern,
+    LinalgGemmPattern,
+    LinalgGenericGemmPattern,
+)
+
+from .pattern_rewrite import PatternRewriter
+
+_DEFAULT_REPLACE_PATTERNS: tuple[type[TileArrayProgramReplacePattern], ...] = (
+    LinalgGemmPattern,
+    LinalgGenericGemmPattern,
+    AffineGemmPattern,
+)
 
 
-class PatternReplacer:
-    """Mutates IR on behalf of one successfully matched pattern."""
-
-    def __init__(self, root: OpView):
-        self._root = root
-
-    @property
-    def ip(self) -> InsertionPoint:
-        """Returns an insertion point immediately before the pattern root."""
-
-        return InsertionPoint(self._root)
-
-    def erase_op(self, operation: OpView) -> None:
-        """Erases an operation that has no live results."""
-
-        for index in range(len(operation.results)):
-            if any(operation.results[index].uses):
-                raise ValueError("cannot erase an operation with live results")
-
-        operation.erase()
-
-    def replace_op(self, operation: OpView, replacement: OpView) -> None:
-        """Replaces an operation and redirects its SSA results."""
-
-        old_results = tuple(
-            operation.results[index] for index in range(len(operation.results))
-        )
-        new_results = tuple(
-            replacement.results[index] for index in range(len(replacement.results))
-        )
-
-        if len(old_results) != len(new_results):
-            raise ValueError("replacement must produce the same number of results")
-
-        if any(old.type != new.type for old, new in zip(old_results, new_results)):
-            raise TypeError("replacement must preserve result types")
-
-        for old_result, new_result in zip(
-            old_results,
-            new_results,
-        ):
-            old_result.replace_all_uses_with(new_result)
-
-        operation.erase()
+class PatternReplacer(PatternRewriter):
+    """Adds TileArray implementation replacement to the shared IR mutations."""
 
     def replace_with_tile_array_program(
         self,
@@ -113,21 +84,21 @@ class PatternReplacer:
         return True
 
 
-def apply_patterns(
+def apply_replacements(
     module: Module,
-    patterns: Sequence[type[TileArrayProgramPattern]],
+    patterns: Sequence[type[TileArrayProgramReplacePattern]] | None = None,
 ) -> int:
-    """Walks a module and applies the first matching pattern at each operation."""
+    """Tries built-in replacements before user patterns at each operation."""
 
-    return _apply_patterns(
+    return _apply_replacements(
         module.operation.opview,
-        patterns,
+        (*_DEFAULT_REPLACE_PATTERNS, *(patterns or ())),
     )
 
 
-def _apply_patterns(
+def _apply_replacements(
     operation: OpView,
-    patterns: Sequence[type[TileArrayProgramPattern]],
+    patterns: Sequence[type[TileArrayProgramReplacePattern]],
 ) -> int:
     """Applies patterns recursively, stopping below a replaced operation."""
 
@@ -145,7 +116,7 @@ def _apply_patterns(
     for region in operation.regions:
         for block in region.blocks:
             for nested_operation in tuple(block.operations):
-                replace_count += _apply_patterns(
+                replace_count += _apply_replacements(
                     nested_operation,
                     patterns,
                 )
