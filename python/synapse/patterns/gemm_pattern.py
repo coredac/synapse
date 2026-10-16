@@ -17,7 +17,7 @@ from taskflow_mlir.ir import (
 )
 
 from synapse.library import ws_gemm_3x3
-from synapse.patterns import TileArrayProgramPattern
+from synapse.patterns import TileArrayProgramReplacePattern
 
 
 class _AffineMapAttrValue(Protocol):
@@ -120,7 +120,7 @@ def _zero_output_initialization(operation, output) -> OpView | None:
     return previous if matches else None
 
 
-class LinalgGemmPattern(TileArrayProgramPattern):
+class LinalgGemmPattern(TileArrayProgramReplacePattern):
     """Matches named matmul using its declared semantics and operand types."""
 
     root = linalg.MatmulOp
@@ -149,7 +149,7 @@ class LinalgGemmPattern(TileArrayProgramPattern):
         return True
 
 
-class LinalgGenericGemmPattern(TileArrayProgramPattern):
+class LinalgGenericGemmPattern(TileArrayProgramReplacePattern):
     """Matches contraction maps and the multiply-add dataflow in a generic op."""
 
     root = linalg.GenericOp
@@ -214,7 +214,7 @@ class LinalgGenericGemmPattern(TileArrayProgramPattern):
         return True
 
 
-class AffineGemmPattern(TileArrayProgramPattern):
+class AffineGemmPattern(TileArrayProgramReplacePattern):
     """Matches matrix accesses and multiply-add dataflow in a canonical loop nest."""
 
     root = affine.AffineForOp

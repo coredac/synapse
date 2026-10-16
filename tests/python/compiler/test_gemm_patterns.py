@@ -2,14 +2,16 @@
 
 import pytest
 import synapse
-from synapse.compiler.pattern_replacement import apply_patterns
+from synapse.compiler.pattern_replace import apply_replacements
+from synapse.compiler.pattern_rewrite import PatternRewriter
+from synapse.patterns import IRRewritePattern, TileArrayProgramReplacePattern
 from synapse.patterns.gemm_pattern import (
     AffineGemmPattern,
     LinalgGemmPattern,
     LinalgGenericGemmPattern,
 )
-from taskflow_mlir.dialects import linalg, neura, taskflow
-from taskflow_mlir.ir import Context, Location, Module
+from taskflow_mlir.dialects import arith, linalg, neura, taskflow
+from taskflow_mlir.ir import Context, IntegerAttr, Location, Module, OpResult, OpView
 
 LINALG_GEMM = """
   linalg.matmul ins(%a, %b : memref<3x3xi32>, memref<3x3xi32>)
@@ -135,7 +137,7 @@ def test_replaces_gemm_inside_existing_task(body, pattern):
         block = task.regions[0].blocks[0]
         terminator = tuple(block.operations)[-1]
         result = task.results[0]
-        assert apply_patterns(module, [pattern]) == 1
+        assert apply_replacements(module, [pattern]) == 1
         assert module.operation.verify()
         assert task.results[0] == result
         assert tuple(block.operations)[-1] == terminator
@@ -179,7 +181,7 @@ def test_rejected_candidates_preserve_original_ir(source):
         module = Module.parse(source)
         before = str(module)
         assert (
-            apply_patterns(
+            apply_replacements(
                 module, [LinalgGemmPattern, LinalgGenericGemmPattern, AffineGemmPattern]
             )
             == 0
@@ -192,6 +194,88 @@ def test_public_compile_accepts_task_ir():
     mapped = synapse.compile(task_source(), target="neura")
     assert "compiled_ii = 1" in mapped
     assert "linalg.matmul" not in mapped
+
+
+def test_user_replacements_extend_builtin_gemm_patterns():
+    class UnexpectedUserPattern(TileArrayProgramReplacePattern):
+        root = linalg.MatmulOp
+
+        @classmethod
+        def match_and_replace(cls, operation, replacer) -> bool:
+            raise AssertionError("the built-in GEMM pattern should match first")
+
+    with Context(), Location.unknown():
+        taskflow.register_dialect()
+        neura.register_dialect()
+        module = Module.parse(task_source())
+        assert apply_replacements(module, [UnexpectedUserPattern]) == 1
+        assert "neura.kernel" in str(module)
+        assert module.operation.verify()
+
+
+def test_user_replacement_runs_when_builtins_do_not_match():
+    matches = []
+
+    class RecordingUserPattern(TileArrayProgramReplacePattern):
+        root = linalg.MatmulOp
+
+        @classmethod
+        def match_and_replace(cls, operation, replacer) -> bool:
+            matches.append(operation)
+            return False
+
+    with Context(), Location.unknown():
+        taskflow.register_dialect()
+        neura.register_dialect()
+        module = Module.parse(task_source().replace("3x3xi32", "2x2xi32"))
+        original = str(module)
+        assert apply_replacements(module, [RecordingUserPattern]) == 0
+        assert len(matches) == 1
+        assert str(module) == original
+        assert module.operation.verify()
+
+
+@pytest.mark.parametrize("pattern", [LinalgGenericGemmPattern, AffineGemmPattern])
+def test_compile_normalizes_ir_before_template_replacement(pattern):
+    class RemoveAddZeroPattern(IRRewritePattern):
+        """Removes a redundant integer addition before the selected template stage."""
+
+        root = arith.AddIOp
+
+        @classmethod
+        def match_and_rewrite(
+            cls, operation: OpView, rewriter: PatternRewriter
+        ) -> bool:
+            parent = operation.operation.parent
+            if pattern is AffineGemmPattern and (
+                parent is None or parent.name != "affine.for"
+            ):
+                return False
+            rhs = operation.operands[1]
+            if not OpResult.isinstance(rhs):
+                return False
+            constant = OpResult(rhs).owner
+            if (
+                constant.name != "arith.constant"
+                or IntegerAttr(constant.attributes["value"]).value != 0
+            ):
+                return False
+            rewriter.replace_op_with_values(operation, (operation.operands[0],))
+            return True
+
+    body = GENERIC_GEMM.replace(
+        "%sum = arith.addi %product, %acc",
+        "%identity = arith.addi %product, %zero : i32\n"
+        "    %sum = arith.addi %identity, %acc",
+    )
+    mapped = synapse.compile(
+        task_source(body),
+        target="neura",
+        rewrite_patterns=[RemoveAddZeroPattern],
+        replace_patterns=[pattern],
+    )
+    assert 'kind = "template"' in mapped
+    assert "compiled_ii = 1" in mapped
 
 
 def test_compile_preserves_memref_dependency_between_tasks():
@@ -220,14 +304,14 @@ def test_compile_applies_affine_patterns_after_linalg_lowering():
     mapped = synapse.compile(
         task_source(commuted),
         target="neura",
-        patterns=[AffineGemmPattern],
+        replace_patterns=[AffineGemmPattern],
     )
     assert "compiled_ii = 1" in mapped
 
 
 def test_invalid_buffer_slice_preserves_source_module():
     import synapse.language as synl
-    from synapse.compiler.pattern_replacement import PatternReplacer
+    from synapse.compiler.pattern_replace import PatternReplacer
 
     def invalid_program(A: synl.Buffer, B: synl.Buffer, C: synl.Buffer):
         synl.load(A[0:0, 0], tile=synl.TileArray(4, 4)[0, 1])
@@ -265,7 +349,7 @@ def test_intervening_memory_write_invalidates_zero_initialization():
         taskflow.register_dialect()
         neura.register_dialect()
         module = Module.parse(task_source(body))
-        apply_patterns(
+        apply_replacements(
             module,
             (LinalgGemmPattern, LinalgGenericGemmPattern, AffineGemmPattern),
         )

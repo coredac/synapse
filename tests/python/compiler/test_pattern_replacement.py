@@ -5,80 +5,26 @@ from typing import cast
 
 import pytest
 import synapse.language as synl
-from synapse.compiler.pattern_replacement import (
-    PatternReplacer,
-    apply_patterns,
+from synapse.compiler.pattern_replace import (
+    apply_replacements,
 )
-from synapse.patterns import TileArrayProgramPattern
-from taskflow_mlir.dialects import arith, func, linalg, neura, taskflow
+from synapse.patterns import TileArrayProgramReplacePattern
+from taskflow_mlir.dialects import linalg, neura, taskflow
 from taskflow_mlir.ir import Context, Location, Module
 
 
 def _apply_to_source(
     source: str,
-    patterns: Sequence[type[TileArrayProgramPattern]],
+    patterns: Sequence[type[TileArrayProgramReplacePattern]],
 ) -> str:
     """Applies selected patterns to parsed test IR."""
     with Context(), Location.unknown():
         taskflow.register_dialect()
         neura.register_dialect()
         module = Module.parse(source)
-        apply_patterns(module, patterns)
+        apply_replacements(module, patterns)
         assert module.operation.verify()
         return str(module)
-
-
-class AddToMultiplyPattern(TileArrayProgramPattern):
-    """Replaces integer addition to verify the replace mechanism."""
-
-    root = arith.AddIOp
-
-    @classmethod
-    def match_and_replace(
-        cls,
-        operation: arith.AddIOp,
-        replacer: PatternReplacer,
-    ) -> bool:
-        """Replaces arith.addi with arith.muli."""
-
-        with replacer.ip:
-            replacement = arith.MulIOp(
-                operation.lhs,
-                operation.rhs,
-            )
-
-        replacer.replace_op(
-            operation,
-            replacement,
-        )
-
-        return True
-
-
-def test_applies_pattern_to_matching_operation():
-    source = """
-    module {
-      func.func @compute(%lhs: i32, %rhs: i32) -> i32 {
-        %result = arith.addi %lhs, %rhs : i32
-        return %result : i32
-      }
-    }
-    """
-
-    with Context(), Location.unknown():
-        module = Module.parse(source)
-
-        replace_count = apply_patterns(
-            module,
-            patterns=[AddToMultiplyPattern],
-        )
-
-        assert module.operation.verify()
-        replaced = str(module)
-
-    assert replace_count == 1
-    assert "arith.addi" not in replaced
-    assert "arith.muli" in replaced
 
 
 def copy_program(A: synl.Buffer, C: synl.Buffer):
@@ -89,7 +35,7 @@ def copy_program(A: synl.Buffer, C: synl.Buffer):
         synl.store(value, target=C[:, x - 1], tile=array[x, 0])
 
 
-class CopyPattern(TileArrayProgramPattern):
+class CopyPattern(TileArrayProgramReplacePattern):
     """Checks and replaces a copy in one user-defined callback."""
 
     root = linalg.CopyOp
@@ -141,8 +87,8 @@ def test_custom_pattern_checks_and_replaces_in_one_callback(dtype):
 
 
 def test_root_filter_runs_before_the_pattern_callback():
-    class UnrelatedPattern(TileArrayProgramPattern):
-        root = arith.AddIOp
+    class UnrelatedPattern(TileArrayProgramReplacePattern):
+        root = linalg.MatmulOp
 
         @classmethod
         def match_and_replace(cls, operation, replacer) -> bool:
@@ -153,7 +99,7 @@ def test_root_filter_runs_before_the_pattern_callback():
 
 
 def test_failed_user_check_preserves_the_original_operation():
-    class RejectingPattern(TileArrayProgramPattern):
+    class RejectingPattern(TileArrayProgramReplacePattern):
         root = linalg.CopyOp
 
         @classmethod
@@ -170,7 +116,7 @@ def test_invalid_user_implementation_remains_an_error():
     def invalid(A: synl.Buffer, C: synl.Buffer):
         raise ValueError("invalid user program")
 
-    class InvalidPattern(TileArrayProgramPattern):
+    class InvalidPattern(TileArrayProgramReplacePattern):
         root = linalg.CopyOp
 
         @classmethod
